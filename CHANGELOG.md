@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here.
 
+## [0.4.0] - 2026-10-02
+
+### Added
+
+- Optional Redis and BullMQ batch processing with 100-image batch limit, exponential retries, per-client concurrency and rate limits, and expiring job results.
+- Multipart batch uploads, job status with item errors, and streamed ZIP downloads backed by disk storage.
+- Optional HMAC-signed completion webhooks with public-address validation and redirect rejection.
+- Graceful queue shutdown and Redis-backed integration coverage in CI.
+
 ## [0.3.0] - 2026-10-02
 
 ### Added

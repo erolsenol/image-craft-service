@@ -10,7 +10,7 @@
 - Accept-based auto format selection (AVIF, then WebP, then source format) and BlurHash previews.
 - Transform uploaded images or public remote URLs; strip metadata from output.
 - Disk cache with TTL, size-bounded LRU eviction, request coalescing, and `X-Cache` / ETag headers.
-- Optional Redis-backed batch jobs that return ZIP downloads.
+- Optional Redis-backed batch jobs with streamed ZIP downloads, per-item errors, retries, and per-client limits.
 - SSRF defenses, signed URLs, input and output limits, and bounded processing concurrency.
 - Optional rembg background removal plugin.
 
@@ -89,22 +89,52 @@ Choose based on your runtime, deployment model, and required transforms. This pr
 
 ## API at a glance
 
-| Endpoint                    | Purpose                                              |
-| --------------------------- | ---------------------------------------------------- |
-| `POST /v1/transform`        | Upload and transform an image                        |
-| `GET /v1/img/:ops/*src`     | Fetch and transform a public remote image            |
-| `GET /v1/hash/*src`         | Generate a BlurHash preview for a remote image       |
-| `POST /v1/metadata`         | Read dimensions, format, and EXIF without GPS fields |
-| `POST /v1/batch`            | Submit URL transforms when Redis jobs are enabled    |
-| `GET /v1/jobs/:id`          | Poll a batch job or download its ZIP                 |
-| `GET /health`, `GET /ready` | Liveness and readiness checks                        |
-| `GET /docs`                 | OpenAPI documentation and Swagger UI                 |
+| Endpoint                    | Purpose                                                      |
+| --------------------------- | ------------------------------------------------------------ |
+| `POST /v1/transform`        | Upload and transform an image                                |
+| `GET /v1/img/:ops/*src`     | Fetch and transform a public remote image                    |
+| `GET /v1/hash/*src`         | Generate a BlurHash preview for a remote image               |
+| `POST /v1/metadata`         | Read dimensions, format, and EXIF without GPS fields         |
+| `POST /v1/uploads`          | Store an image for a later batch job (returns file ID)       |
+| `POST /v1/batch`            | Submit URL or uploaded-file transforms when Redis is enabled |
+| `GET /v1/jobs/:id`          | Poll job status, progress, and per-item errors               |
+| `GET /v1/jobs/:id/download` | Stream the completed ZIP archive                             |
+| `GET /health`, `GET /ready` | Liveness and readiness checks                                |
+| `GET /docs`                 | OpenAPI documentation and Swagger UI                         |
 
 For the remote transform endpoint, OpenAPI documents `sig`, `expires`, `If-None-Match`, and the `X-Cache`, `ETag`, and `Cache-Control` response headers.
 
 Invalid operation requests return a JSON `error` and machine-readable `code`, such as `INVALID_OPERATIONS` or `OPS_CHAIN_TOO_LONG`.
 
 For URL transforms, operation tokens include `w`, `h`, `fit`, `rot`, `blur`, `sharp`, `gray_1`, `wm`, `f`, and `q`. Multipart requests accept a JSON `ops` array. See the examples above and [Swagger UI](http://localhost:3000/docs) for request schemas.
+
+### Batch jobs
+
+Run Redis and the API with Docker Compose (copy `.env.example` to `.env` first, then set `QUEUE_ENABLED=true`):
+
+```sh
+cp .env.example .env
+# Set QUEUE_ENABLED=true in .env
+docker compose up --build
+```
+
+Submit source URLs directly, or upload images first and use their expiring IDs:
+
+```sh
+curl -X POST http://localhost:3000/v1/uploads \\
+  -F 'file=@photo.jpg' -H 'X-API-Key: your-configured-key'
+
+curl -X POST http://localhost:3000/v1/batch \\
+  -H 'Content-Type: application/json' -H 'X-API-Key: your-configured-key' \\
+  -d '{"sources":["https://example.com/a.jpg","file_<returned-id>"],"ops":[{"op":"resize","width":400}]}'
+
+curl -H 'X-API-Key: your-configured-key' http://localhost:3000/v1/jobs/<job-id>
+curl -L -H 'X-API-Key: your-configured-key' http://localhost:3000/v1/jobs/<job-id>/download -o results.zip
+```
+
+The default maximum is 100 sources per job. The worker processes items sequentially and persists each transformed result to disk; ZIP downloads pipe those files to the response, so image and archive contents are not accumulated in memory. Set `API_KEYS` to comma-separated client keys to enable key authentication and per-key quotas. Configure `BATCH_CONCURRENCY_PER_API_KEY`, `BATCH_RATE_LIMIT_PER_API_KEY`, and `BATCH_RATE_WINDOW_MS` for admission limits. Job data and result files expire according to `BATCH_RESULT_TTL_SECONDS`.
+
+Set `WEBHOOK_SIGNING_SECRET` (at least 32 characters) and pass `webhookUrl` when submitting a job to receive a completion callback. The service signs `timestamp + "." + raw JSON body` with HMAC-SHA256 in `X-Image-Craft-Timestamp` and `X-Image-Craft-Signature` headers. Callback hosts must resolve to public IPs; redirects are rejected.
 
 Use `f_auto` to negotiate AVIF, WebP, or the original image format from the request's `Accept` header. The response includes `Vary: Accept`.
 
@@ -126,21 +156,29 @@ curl 'http://localhost:3000/v1/hash/https://example.com/photo.jpg'
 
 All settings are environment variables validated at startup. See [.env.example](.env.example) for the full list.
 
-| Variable                          | Default                            | Purpose                                            |
-| --------------------------------- | ---------------------------------- | -------------------------------------------------- |
-| `MAX_UPLOAD_BYTES`                | `20971520`                         | Maximum input size in bytes                        |
-| `MAX_INPUT_PIXELS`                | `40000000`                         | Decompression-bomb pixel limit                     |
-| `MAX_OUTPUT_DIMENSION`            | `4096`                             | Maximum output width or height                     |
-| `CONCURRENCY_LIMIT`               | `8`                                | Maximum simultaneous requests                      |
-| `REMOTE_TRANSFORM_RATE_LIMIT`     | `60`                               | Remote transforms allowed per IP per window        |
-| `REMOTE_TRANSFORM_RATE_WINDOW_MS` | `60000`                            | Remote transform rate-limit window in milliseconds |
-| `IMAGE_PROCESSING_CONCURRENCY`    | `2`                                | Concurrent image and plugin operations             |
-| `MAX_OPS_CHAIN`                   | `20`                               | Maximum operations accepted in one transform chain |
-| `ALLOWED_HOSTS`                   | unset                              | Optional comma-separated remote host allowlist     |
-| `SIGNING_SECRET`                  | unset                              | Require signed remote transform URLs               |
-| `CACHE_MAX_SIZE_BYTES`            | `536870912`                        | Maximum disk cache size                            |
-| `QUEUE_ENABLED` / `REDIS_URL`     | `false` / `redis://127.0.0.1:6379` | Enable Redis-backed batch jobs                     |
-| `REMOVE_BACKGROUND_ENABLED`       | `false`                            | Enable the optional rembg plugin                   |
+| Variable                                        | Default                            | Purpose                                                          |
+| ----------------------------------------------- | ---------------------------------- | ---------------------------------------------------------------- |
+| `MAX_UPLOAD_BYTES`                              | `20971520`                         | Maximum input size in bytes                                      |
+| `MAX_INPUT_PIXELS`                              | `40000000`                         | Decompression-bomb pixel limit                                   |
+| `MAX_OUTPUT_DIMENSION`                          | `4096`                             | Maximum output width or height                                   |
+| `CONCURRENCY_LIMIT`                             | `8`                                | Maximum simultaneous requests                                    |
+| `REMOTE_TRANSFORM_RATE_LIMIT`                   | `60`                               | Remote transforms allowed per IP per window                      |
+| `REMOTE_TRANSFORM_RATE_WINDOW_MS`               | `60000`                            | Remote transform rate-limit window in milliseconds               |
+| `IMAGE_PROCESSING_CONCURRENCY`                  | `2`                                | Concurrent image and plugin operations                           |
+| `MAX_OPS_CHAIN`                                 | `20`                               | Maximum operations accepted in one transform chain               |
+| `ALLOWED_HOSTS`                                 | unset                              | Optional comma-separated remote host allowlist                   |
+| `SIGNING_SECRET`                                | unset                              | Require signed remote transform URLs                             |
+| `CACHE_MAX_SIZE_BYTES`                          | `536870912`                        | Maximum disk cache size                                          |
+| `QUEUE_ENABLED` / `REDIS_URL`                   | `false` / `redis://127.0.0.1:6379` | Enable Redis-backed batch jobs                                   |
+| `API_KEYS`                                      | unset                              | Comma-separated keys for batch authentication and per-key quotas |
+| `BATCH_MAX_ITEMS`                               | `100`                              | Maximum sources in one batch                                     |
+| `BATCH_CONCURRENCY_PER_API_KEY`                 | `2`                                | Active queued jobs per client key                                |
+| `BATCH_RATE_LIMIT_PER_API_KEY`                  | `10`                               | Jobs admitted per client within the rate window                  |
+| `BATCH_RATE_WINDOW_MS`                          | `60000`                            | Per-key job rate window                                          |
+| `BATCH_JOB_ATTEMPTS` / `BATCH_BACKOFF_DELAY_MS` | `3` / `1000`                       | Retry count and exponential backoff base                         |
+| `BATCH_RESULT_TTL_SECONDS`                      | `86400`                            | Job and output retention period                                  |
+| `WEBHOOK_SIGNING_SECRET`                        | unset                              | HMAC key for optional completion webhooks                        |
+| `REMOVE_BACKGROUND_ENABLED`                     | `false`                            | Enable the optional rembg plugin                                 |
 
 ## Security
 

@@ -86,10 +86,34 @@ export async function createApp(
     timeWindow: config.REMOTE_TRANSFORM_RATE_WINDOW_MS,
   });
   await app.register(swagger, {
+    transformObject: (document) => {
+      const documentObject =
+        "openapiObject" in document
+          ? document.openapiObject
+          : document.swaggerObject;
+      const paths = documentObject.paths as
+        Record<string, Record<string, Record<string, unknown>>> | undefined;
+      const uploadPost = paths?.["/v1/uploads"]?.post;
+      if (uploadPost) {
+        uploadPost.requestBody = {
+          required: true,
+          content: {
+            "multipart/form-data": {
+              schema: {
+                type: "object",
+                required: ["file"],
+                properties: { file: { type: "string", format: "binary" } },
+              },
+            },
+          },
+        };
+      }
+      return documentObject;
+    },
     openapi: {
       info: {
         title: "Image Craft Service",
-        version: "0.2.0",
+        version: "0.4.0",
         description: "Self-hosted image processing HTTP API",
       },
       servers: [{ url: "/" }],

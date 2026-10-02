@@ -3,6 +3,7 @@ import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { utimes } from "node:fs/promises";
+import { arrayBuffer } from "node:stream/consumers";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DiskStorage } from "../../src/storage/disk-storage.js";
 
@@ -40,6 +41,15 @@ describe("DiskStorage", () => {
     expect(await storage.get("entry")).toEqual(Buffer.from("image"));
     await storage.delete("entry");
     expect(await storage.get("entry")).toBeUndefined();
+  });
+
+  it("streams entry values without loading the complete storage envelope", async () => {
+    const storage = new DiskStorage(directory, 1024);
+    const value = Buffer.alloc(128, 7);
+    await storage.set("stream", value, 60);
+    const stream = await storage.getStream("stream");
+    expect(stream).toBeDefined();
+    expect(Buffer.from(await arrayBuffer(stream!))).toEqual(value);
   });
 
   it("expires entries according to their TTL", async () => {

@@ -1,4 +1,5 @@
 import sharp from "sharp";
+import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../../src/api/app.js";
 import type { AppConfig } from "../../src/config/index.js";
@@ -25,6 +26,7 @@ const testConfig: AppConfig = {
   REMOTE_TRANSFORM_RATE_WINDOW_MS: 60_000,
   IMAGE_PROCESSING_CONCURRENCY: 2,
   MAX_OPS_CHAIN: 20,
+  API_KEYS: "",
   ALLOWED_HOSTS: "",
   SIGNING_SECRET: undefined,
   CACHE_DIR: "/tmp/image-craft-test-cache",
@@ -32,10 +34,16 @@ const testConfig: AppConfig = {
   CACHE_MAX_SIZE_BYTES: 1024 * 1024,
   QUEUE_ENABLED: false,
   REDIS_URL: "redis://127.0.0.1:6379",
-  BATCH_MAX_ITEMS: 3,
+  BATCH_MAX_ITEMS: 100,
   BATCH_CONCURRENCY: 1,
+  BATCH_CONCURRENCY_PER_API_KEY: 2,
+  BATCH_RATE_LIMIT_PER_API_KEY: 10,
+  BATCH_RATE_WINDOW_MS: 60_000,
+  BATCH_JOB_ATTEMPTS: 3,
+  BATCH_BACKOFF_DELAY_MS: 100,
   BATCH_MAX_RESULT_BYTES: 1024 * 1024,
   BATCH_RESULT_TTL_SECONDS: 3600,
+  WEBHOOK_SIGNING_SECRET: undefined,
   REMOVE_BACKGROUND_ENABLED: false,
   REMBG_URL: "http://127.0.0.1:7000",
 };
@@ -67,13 +75,30 @@ function multipart(
 class MemoryBatchQueue implements BatchQueue {
   readonly input: BatchRequest[] = [];
   current: BatchJobStatus | undefined;
+  owner: string | undefined;
+  archive = Buffer.from("PK-test-zip");
   async enqueue(input: BatchRequest): Promise<string> {
     this.input.push(input);
-    this.current = { id: "job-123", state: "waiting", progress: 0 };
-    return "job-123";
+    this.owner = input.apiKeyId;
+    this.current = {
+      jobId: "11111111-1111-4111-8111-111111111111",
+      status: "queued",
+      progress: 0,
+      completedItems: 0,
+      totalItems: input.sources.length,
+      errors: [],
+    };
+    return this.current.jobId;
   }
-  async get(id: string): Promise<BatchJobStatus | undefined> {
-    return this.current?.id === id ? this.current : undefined;
+  async get(id: string, apiKeyId: string): Promise<BatchJobStatus | undefined> {
+    return this.current?.jobId === id && this.owner === apiKeyId
+      ? this.current
+      : undefined;
+  }
+  async download(id: string, apiKeyId: string) {
+    return this.current?.jobId === id && this.owner === apiKeyId
+      ? Readable.from(this.archive)
+      : undefined;
   }
   isReady(): boolean {
     return true;
@@ -90,10 +115,16 @@ class UnavailableBatchQueue extends MemoryBatchQueue {
 class HostileStatusQueue extends MemoryBatchQueue {
   async get(): Promise<BatchJobStatus> {
     return {
-      id: 'evil"\r\nX-Injected: yes',
-      state: "completed",
+      jobId: 'evil"\r\nX-Injected: yes',
+      status: "done",
       progress: 100,
+      completedItems: 1,
+      totalItems: 1,
+      errors: [],
     };
+  }
+  async download() {
+    return Readable.from(Buffer.from("zip"));
   }
 }
 
@@ -101,6 +132,10 @@ class MemoryStorage implements Storage {
   readonly values = new Map<string, Buffer>();
   async get(key: string): Promise<Buffer | undefined> {
     return this.values.get(key);
+  }
+  async getStream(key: string) {
+    const value = await this.get(key);
+    return value ? Readable.from(value) : undefined;
   }
   async set(key: string, value: Buffer, ttlSeconds: number): Promise<void> {
     void ttlSeconds;
@@ -160,6 +195,13 @@ describe("HTTP API", () => {
     expect(docs.json().paths).toHaveProperty("/v1/metadata");
     expect(docs.json().paths).toHaveProperty("/v1/batch");
     expect(docs.json().paths).toHaveProperty("/v1/jobs/{id}");
+    expect(docs.json().paths).toHaveProperty("/v1/jobs/{id}/download");
+    expect(docs.json().paths).toHaveProperty("/v1/uploads");
+    expect(
+      docs.json().paths["/v1/uploads"].post.requestBody.content[
+        "multipart/form-data"
+      ].schema.properties.file.format,
+    ).toBe("binary");
     expect(docs.json().paths).toHaveProperty("/v1/hash/{*}");
     expect(docs.json().paths["/v1/img/{ops}/{*}"]?.get?.parameters).toEqual(
       expect.arrayContaining([
@@ -320,7 +362,7 @@ describe("HTTP API", () => {
     await rateLimitedApp.close();
   });
 
-  it("queues batch jobs and downloads the completed ZIP", async () => {
+  it("queues batch jobs, reports progress, and downloads the completed ZIP", async () => {
     const batchQueue = new MemoryBatchQueue();
     const batchStorage = new MemoryStorage();
     const queueConfig = { ...testConfig, QUEUE_ENABLED: true };
@@ -335,44 +377,105 @@ describe("HTTP API", () => {
       },
     });
     expect(queued.statusCode).toBe(202);
-    expect(queued.json()).toMatchObject({
-      id: "job-123",
-      status: "waiting",
-      statusUrl: "/v1/jobs/job-123",
+    expect(queued.json()).toEqual({
+      jobId: "11111111-1111-4111-8111-111111111111",
     });
     expect(batchQueue.input[0]?.sources).toHaveLength(2);
 
-    const waiting = await server.inject("/v1/jobs/job-123");
-    expect(waiting.json()).toMatchObject({ state: "waiting", progress: 0 });
-    const archive = Buffer.from("PK-test-zip");
-    batchStorage.values.set("batch-result:job-123", archive);
-    batchQueue.current = { id: "job-123", state: "completed", progress: 100 };
-    const completed = await server.inject("/v1/jobs/job-123");
+    const jobId = "11111111-1111-4111-8111-111111111111";
+    const waiting = await server.inject(`/v1/jobs/${jobId}`);
+    expect(waiting.json()).toMatchObject({ status: "queued", progress: 0 });
+    batchQueue.current = {
+      jobId,
+      status: "done",
+      progress: 100,
+      completedItems: 2,
+      totalItems: 2,
+      errors: [],
+    };
+    const completedStatus = await server.inject(`/v1/jobs/${jobId}`);
+    expect(completedStatus.json()).toMatchObject({
+      status: "done",
+      progress: 100,
+    });
+    const completed = await server.inject(`/v1/jobs/${jobId}/download`);
     expect(completed.statusCode).toBe(200);
     expect(completed.headers["content-type"]).toContain("application/zip");
     expect(completed.headers["content-disposition"]).toContain("attachment");
-    expect(completed.rawPayload).toEqual(archive);
+    expect(completed.rawPayload).toEqual(batchQueue.archive);
     await server.close();
   });
 
   it("uses a fixed safe download filename for untrusted job status IDs", async () => {
     const batchStorage = new MemoryStorage();
-    batchStorage.values.set(
-      'batch-result:evil"\r\nX-Injected: yes',
-      Buffer.from("zip"),
-    );
+    const jobId = "11111111-1111-4111-8111-111111111111";
     const server = await createApp(
       testConfig,
       batchStorage,
       new HostileStatusQueue(),
     );
     await server.ready();
-    const response = await server.inject("/v1/jobs/request-id");
+    const response = await server.inject(`/v1/jobs/${jobId}/download`);
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-disposition"]).toBe(
       'attachment; filename="image-craft-result.zip"',
     );
     expect(response.headers["x-injected"]).toBeUndefined();
+    await server.close();
+  });
+
+  it("stores validated multipart batch uploads behind expiring file IDs", async () => {
+    const queue = new MemoryBatchQueue();
+    const batchStorage = new MemoryStorage();
+    const server = await createApp(
+      { ...testConfig, QUEUE_ENABLED: true },
+      batchStorage,
+      queue,
+    );
+    await server.ready();
+    const form = multipart(image);
+    const response = await server.inject({
+      method: "POST",
+      url: "/v1/uploads",
+      headers: { "content-type": form.contentType },
+      payload: form.payload,
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({ expiresIn: 3600 });
+    expect(response.json().fileId).toMatch(/^file_[0-9a-f-]{36}$/u);
+    expect(
+      batchStorage.values.get(`batch-upload:${response.json().fileId}`),
+    ).toEqual(image);
+    expect(
+      batchStorage.values.get(`batch-upload-owner:${response.json().fileId}`),
+    ).toBeDefined();
+    await server.close();
+  });
+
+  it("requires a configured API key and uses a constant client identifier", async () => {
+    const queue = new MemoryBatchQueue();
+    const server = await createApp(
+      { ...testConfig, QUEUE_ENABLED: true, API_KEYS: "secret-one,secret-two" },
+      new MemoryStorage(),
+      queue,
+    );
+    await server.ready();
+    const payload = {
+      sources: ["https://example.com/image.jpg"],
+      ops: [],
+    };
+    expect(
+      (await server.inject({ method: "POST", url: "/v1/batch", payload }))
+        .statusCode,
+    ).toBe(401);
+    const queued = await server.inject({
+      method: "POST",
+      url: "/v1/batch",
+      headers: { "x-api-key": "secret-one" },
+      payload,
+    });
+    expect(queued.statusCode).toBe(202);
+    expect(queue.input[0]?.apiKeyId).not.toContain("secret-one");
     await server.close();
   });
 

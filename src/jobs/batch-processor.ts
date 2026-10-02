@@ -1,60 +1,144 @@
 import { ZipArchive } from "archiver";
+import { Transform, PassThrough } from "node:stream";
+import type { Readable } from "node:stream";
 import { AppError } from "../core/errors.js";
 import { runImageOperations } from "../plugins/run-operations.js";
 import { createPluginRegistry } from "../plugins/registry.js";
 import type { AppConfig } from "../config/index.js";
 import { fetchRemoteImage } from "../security/ssrf.js";
 import type { Storage } from "../storage/storage.js";
-import type { BatchRequest } from "./types.js";
+import type {
+  BatchJobResult,
+  BatchProgress,
+  BatchRequest,
+  BatchResultFile,
+} from "./types.js";
 import { ConcurrencyLimiter } from "../security/concurrency.js";
+import { validateImage } from "../security/limits.js";
 
 export async function processBatch(
   input: BatchRequest,
   jobId: string,
   config: AppConfig,
   storage: Storage,
-  onProgress: (progress: number) => Promise<void>,
+  onProgress: (progress: BatchProgress) => Promise<void>,
   processingLimiter = new ConcurrencyLimiter(
     config.IMAGE_PROCESSING_CONCURRENCY,
   ),
-): Promise<void> {
-  const outputs: Array<{ name: string; buffer: Buffer }> = [];
-  let totalOutputBytes = 0;
+): Promise<BatchJobResult> {
+  const files: BatchResultFile[] = [];
+  const errors: BatchJobResult["errors"] = [];
+  const plugins = createPluginRegistry(config);
   const allowedHosts = config.ALLOWED_HOSTS.split(",")
     .map((host) => host.trim().toLowerCase())
     .filter(Boolean);
-  const plugins = createPluginRegistry(config);
+  let totalOutputBytes = 0;
+  let completedItems = 0;
 
   for (const [index, source] of input.sources.entries()) {
-    const remote = await fetchRemoteImage(source, {
-      allowedHosts,
-      timeoutMs: config.REQUEST_TIMEOUT_MS,
-      maxBytes: config.MAX_UPLOAD_BYTES,
+    try {
+      const sourceBuffer = source.startsWith("file_")
+        ? await loadOwnedUpload(storage, source, input.apiKeyId)
+        : (
+            await fetchRemoteImage(source, {
+              allowedHosts,
+              timeoutMs: config.REQUEST_TIMEOUT_MS,
+              maxBytes: config.MAX_UPLOAD_BYTES,
+            })
+          ).body;
+      if (!sourceBuffer) throw new AppError("Uploaded source has expired", 404);
+      await validateImage(sourceBuffer, config.MAX_INPUT_PIXELS);
+      const result = await runImageOperations(
+        sourceBuffer,
+        input.ops,
+        plugins,
+        config.MAX_INPUT_PIXELS,
+        config.MAX_OUTPUT_DIMENSION,
+        processingLimiter,
+      );
+      if (
+        totalOutputBytes + result.buffer.byteLength >
+        config.BATCH_MAX_RESULT_BYTES
+      )
+        throw new AppError("Batch output exceeds configured size limit", 413);
+      totalOutputBytes += result.buffer.byteLength;
+      const name = `image-${String(index + 1).padStart(3, "0")}.${extensionFor(result.contentType)}`;
+      const storageKey = `batch-result:${jobId}:${index}`;
+      await storage.set(
+        storageKey,
+        result.buffer,
+        config.BATCH_RESULT_TTL_SECONDS,
+      );
+      files.push({ storageKey, name });
+    } catch {
+      errors.push({
+        index,
+        code: "ITEM_PROCESSING_FAILED",
+        message: "This image could not be processed.",
+      });
+    }
+    completedItems += 1;
+    await onProgress({
+      percentage: Math.round((completedItems / input.sources.length) * 100),
+      completedItems,
+      totalItems: input.sources.length,
+      errors: [...errors],
     });
-    const result = await runImageOperations(
-      remote.body,
-      input.ops,
-      plugins,
-      config.MAX_INPUT_PIXELS,
-      config.MAX_OUTPUT_DIMENSION,
-      processingLimiter,
-    );
-    totalOutputBytes += result.buffer.byteLength;
-    if (totalOutputBytes > config.BATCH_MAX_RESULT_BYTES)
-      throw new AppError("Batch output exceeds configured size limit", 413);
-    outputs.push({
-      name: `image-${String(index + 1).padStart(3, "0")}.${extensionFor(result.contentType)}`,
-      buffer: result.buffer,
-    });
-    await onProgress(Math.round(((index + 1) / input.sources.length) * 100));
   }
 
-  const zip = await createZip(outputs, config.BATCH_MAX_RESULT_BYTES);
-  await storage.set(
-    `batch-result:${jobId}`,
-    zip,
-    config.BATCH_RESULT_TTL_SECONDS,
-  );
+  return {
+    files,
+    errors,
+    completedItems,
+    totalItems: input.sources.length,
+  };
+}
+
+async function loadOwnedUpload(
+  storage: Storage,
+  fileId: string,
+  apiKeyId: string,
+): Promise<Buffer | undefined> {
+  const [owner, image] = await Promise.all([
+    storage.get(`batch-upload-owner:${fileId}`),
+    storage.get(`batch-upload:${fileId}`),
+  ]);
+  if (!owner || owner.toString("utf8") !== apiKeyId) return undefined;
+  return image;
+}
+
+export function createZipStream(
+  files: ReadonlyArray<{ name: string; stream: Readable }>,
+  errors: unknown,
+  maxBytes: number,
+): Readable {
+  const archive = new ZipArchive({ zlib: { level: 6 } });
+  const output = new PassThrough();
+  let totalBytes = 0;
+  const outputLimit = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      totalBytes += chunk.length;
+      if (totalBytes > maxBytes) {
+        callback(
+          new AppError("Batch archive exceeds configured size limit", 413),
+        );
+        return;
+      }
+      callback(null, chunk);
+    },
+  });
+  archive.on("error", (error: Error) => output.destroy(error));
+  outputLimit.on("error", (error: Error) => {
+    archive.abort();
+    output.destroy(error);
+  });
+  archive.pipe(outputLimit).pipe(output);
+  for (const file of files) archive.append(file.stream, { name: file.name });
+  archive.append(JSON.stringify(errors, null, 2), { name: "errors.json" });
+  void archive.finalize().catch((error: unknown) => {
+    output.destroy(error instanceof Error ? error : new Error("ZIP failed"));
+  });
+  return output;
 }
 
 export async function createZip(

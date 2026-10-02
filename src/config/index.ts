@@ -1,5 +1,10 @@
 import { z } from "zod";
 
+const optionalSecret = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().min(32).optional(),
+);
+
 export const envSchema = z
   .object({
     NODE_ENV: z
@@ -51,6 +56,7 @@ export const envSchema = z
       .max(4)
       .default(2),
     MAX_OPS_CHAIN: z.coerce.number().int().positive().max(50).default(20),
+    API_KEYS: z.string().default(""),
     ALLOWED_HOSTS: z.string().default(""),
     SIGNING_SECRET: z.string().optional(),
     CACHE_DIR: z.string().default("/tmp/image-craft-cache"),
@@ -65,8 +71,33 @@ export const envSchema = z
       .default("false")
       .transform((value) => value === "true"),
     REDIS_URL: z.string().url().default("redis://127.0.0.1:6379"),
-    BATCH_MAX_ITEMS: z.coerce.number().int().positive().max(100).default(20),
+    BATCH_MAX_ITEMS: z.coerce.number().int().positive().max(100).default(100),
     BATCH_CONCURRENCY: z.coerce.number().int().positive().max(4).default(1),
+    BATCH_CONCURRENCY_PER_API_KEY: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(100)
+      .default(2),
+    BATCH_RATE_LIMIT_PER_API_KEY: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(10_000)
+      .default(10),
+    BATCH_RATE_WINDOW_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(3_600_000)
+      .default(60_000),
+    BATCH_JOB_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+    BATCH_BACKOFF_DELAY_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(300_000)
+      .default(1_000),
     BATCH_MAX_RESULT_BYTES: z.coerce
       .number()
       .int()
@@ -74,6 +105,7 @@ export const envSchema = z
       .max(128 * 1024 * 1024)
       .default(128 * 1024 * 1024),
     BATCH_RESULT_TTL_SECONDS: z.coerce.number().int().positive().default(86400),
+    WEBHOOK_SIGNING_SECRET: optionalSecret,
     REMOVE_BACKGROUND_ENABLED: z
       .enum(["true", "false"])
       .default("false")

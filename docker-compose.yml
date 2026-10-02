@@ -15,13 +15,15 @@ services:
     volumes:
       - image-cache:/var/cache/image-craft
     restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
     read_only: true
     tmpfs:
       - /tmp:size=64m,noexec,nosuid
 
   redis:
     image: redis:7-alpine
-    profiles: [queue]
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis-data:/data

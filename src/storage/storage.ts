@@ -6,7 +6,9 @@ export interface StorageStats {
 
 export interface Storage {
   get(key: string): Promise<Buffer | undefined>;
+  getStream(key: string): Promise<Readable | undefined>;
   set(key: string, value: Buffer, ttlSeconds: number): Promise<void>;
   delete(key: string): Promise<void>;
   stats(): Promise<StorageStats>;
 }
+import type { Readable } from "node:stream";
