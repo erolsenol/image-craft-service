@@ -87,6 +87,26 @@ export const envSchema = z
           }
         });
       }, "CORS_ORIGINS must be a comma-separated list of exact HTTP(S) origins"),
+    OTEL_ENABLED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    OTEL_EXPORTER_OTLP_ENDPOINT: z
+      .string()
+      .url()
+      .default("http://localhost:4318")
+      .refine((value) => {
+        try {
+          const endpoint = new URL(value);
+          return (
+            ["http:", "https:"].includes(endpoint.protocol) &&
+            !endpoint.username &&
+            !endpoint.password
+          );
+        } catch {
+          return false;
+        }
+      }, "OTEL_EXPORTER_OTLP_ENDPOINT must be an HTTP(S) URL without credentials"),
     ALLOWED_HOSTS: z.string().default(""),
     SIGNING_SECRET: z.string().optional(),
     CACHE_DIR: z.string().default("/tmp/image-craft-cache"),

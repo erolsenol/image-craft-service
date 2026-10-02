@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: image-craft-service
+    orgId: 1
+    folder: Image Craft Service
+    type: file
+    disableDeletion: true
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

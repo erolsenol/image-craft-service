@@ -48,6 +48,11 @@ export interface BatchQueue {
   enqueue(input: BatchRequest): Promise<string>;
   get(id: string, apiKeyId: string): Promise<BatchJobStatus | undefined>;
   download(id: string, apiKeyId: string): Promise<Readable | undefined>;
+  getQueueDepth?(): Promise<{
+    waiting: number;
+    active: number;
+    delayed: number;
+  }>;
   isReady(): boolean;
   close(): Promise<void>;
 }

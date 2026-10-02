@@ -8,6 +8,7 @@ import sharp, {
 } from "sharp";
 import type { CoreOperation } from "../api/schemas/operations.js";
 import { assertOutputDimensions } from "../security/limits.js";
+import { performance } from "node:perf_hooks";
 
 export interface TransformResult {
   buffer: Buffer;
@@ -32,6 +33,7 @@ export async function transformImage(
   maxPixels: number,
   maxDimension: number,
   accept?: string,
+  observeOperation?: (operation: string, durationSeconds: number) => void,
 ): Promise<TransformResult> {
   const inputImage = sharp(input, {
     limitInputPixels: maxPixels,
@@ -76,138 +78,152 @@ export async function transformImage(
   let outputQuality: number | undefined;
   let roundedRadius: number | undefined;
   for (const operation of operations) {
-    switch (operation.op) {
-      case "resize": {
-        if (operation.fx !== undefined && operation.fy !== undefined) {
-          const targetWidth = operation.width ?? initial.width;
-          const targetHeight = operation.height ?? initial.height;
-          const prior = await image.png().toBuffer({ resolveWithObject: true });
-          const crop = focalCrop(
-            prior.info.width,
-            prior.info.height,
-            targetWidth,
-            targetHeight,
-            operation.fx,
-            operation.fy,
-          );
-          image = sharp(prior.data)
-            .extract(crop)
-            .resize(targetWidth, targetHeight);
-        } else {
-          image.resize(operation.width, operation.height, {
-            fit: (operation.fit ?? "cover") as keyof FitEnum,
-            ...(operation.strategy ? { position: operation.strategy } : {}),
-          });
+    const operationStarted = performance.now();
+    try {
+      switch (operation.op) {
+        case "resize": {
+          if (operation.fx !== undefined && operation.fy !== undefined) {
+            const targetWidth = operation.width ?? initial.width;
+            const targetHeight = operation.height ?? initial.height;
+            const prior = await image
+              .png()
+              .toBuffer({ resolveWithObject: true });
+            const crop = focalCrop(
+              prior.info.width,
+              prior.info.height,
+              targetWidth,
+              targetHeight,
+              operation.fx,
+              operation.fy,
+            );
+            image = sharp(prior.data)
+              .extract(crop)
+              .resize(targetWidth, targetHeight);
+          } else {
+            image.resize(operation.width, operation.height, {
+              fit: (operation.fit ?? "cover") as keyof FitEnum,
+              ...(operation.strategy ? { position: operation.strategy } : {}),
+            });
+          }
+          break;
         }
-        break;
-      }
-      case "crop": {
-        if (operation.strategy) {
-          image.resize(operation.width, operation.height, {
-            fit: "cover",
-            position: operation.strategy,
-          });
-        } else if (operation.fx !== undefined && operation.fy !== undefined) {
-          const prior = await image.png().toBuffer({ resolveWithObject: true });
-          const crop = focalCrop(
-            prior.info.width,
-            prior.info.height,
-            operation.width,
-            operation.height,
-            operation.fx,
-            operation.fy,
-          );
-          image = sharp(prior.data)
-            .extract(crop)
-            .resize(operation.width, operation.height);
-        } else {
-          image.extract({
-            left: operation.left,
-            top: operation.top,
-            width: operation.width,
-            height: operation.height,
-          });
+        case "crop": {
+          if (operation.strategy) {
+            image.resize(operation.width, operation.height, {
+              fit: "cover",
+              position: operation.strategy,
+            });
+          } else if (operation.fx !== undefined && operation.fy !== undefined) {
+            const prior = await image
+              .png()
+              .toBuffer({ resolveWithObject: true });
+            const crop = focalCrop(
+              prior.info.width,
+              prior.info.height,
+              operation.width,
+              operation.height,
+              operation.fx,
+              operation.fy,
+            );
+            image = sharp(prior.data)
+              .extract(crop)
+              .resize(operation.width, operation.height);
+          } else {
+            image.extract({
+              left: operation.left,
+              top: operation.top,
+              width: operation.width,
+              height: operation.height,
+            });
+          }
+          break;
         }
-        break;
-      }
-      case "rotate":
-        image.rotate(operation.angle);
-        break;
-      case "blur":
-        image.blur(operation.sigma);
-        break;
-      case "sharpen":
-        image.sharpen({ sigma: operation.sigma ?? 1 });
-        break;
-      case "grayscale":
-        image.grayscale();
-        break;
-      case "watermark":
-        if (operation.text !== undefined) {
-          const prior = await image.png().toBuffer({ resolveWithObject: true });
-          image = sharp(prior.data).composite([
-            {
-              input: watermarkSvg(
-                operation.text,
-                operation.opacity ?? 1,
-                prior.info.width,
-                prior.info.height,
-                operation.position ?? operation.gravity ?? "southeast",
+        case "rotate":
+          image.rotate(operation.angle);
+          break;
+        case "blur":
+          image.blur(operation.sigma);
+          break;
+        case "sharpen":
+          image.sharpen({ sigma: operation.sigma ?? 1 });
+          break;
+        case "grayscale":
+          image.grayscale();
+          break;
+        case "watermark":
+          if (operation.text !== undefined) {
+            const prior = await image
+              .png()
+              .toBuffer({ resolveWithObject: true });
+            image = sharp(prior.data).composite([
+              {
+                input: watermarkSvg(
+                  operation.text,
+                  operation.opacity ?? 1,
+                  prior.info.width,
+                  prior.info.height,
+                  operation.position ?? operation.gravity ?? "southeast",
+                ),
+              },
+            ]);
+          } else {
+            image.composite([
+              await imageWatermark(
+                operation.image!,
+                operation.position ?? operation.gravity,
+                operation.opacity,
               ),
-            },
-          ]);
-        } else {
-          image.composite([
-            await imageWatermark(
-              operation.image!,
-              operation.position ?? operation.gravity,
-              operation.opacity,
-            ),
-          ]);
-        }
-        break;
-      case "format":
-        outputFormat =
-          operation.format === "auto"
-            ? negotiateFormat(accept, inputFormat)
-            : operation.format;
-        outputQuality = operation.quality;
-        break;
-      case "padding":
-        image.extend({
-          top: operation.top,
-          right: operation.right,
-          bottom: operation.bottom,
-          left: operation.left,
-          background: operation.background,
-        });
-        break;
-      case "flip":
-        image.flip();
-        break;
-      case "flop":
-        image.flop();
-        break;
-      case "tint":
-        image.tint(operation.color);
-        break;
-      case "adjust":
-        image.modulate({
-          ...(operation.brightness === undefined
-            ? {}
-            : { brightness: operation.brightness }),
-          ...(operation.saturation === undefined
-            ? {}
-            : { saturation: operation.saturation }),
-        });
-        if (operation.contrast !== undefined) {
-          const multiplier = operation.contrast + 1;
-          image.linear(multiplier, 128 * (1 - multiplier));
-        }
-        break;
-      case "roundedCorners":
-        roundedRadius = operation.radius;
-        break;
+            ]);
+          }
+          break;
+        case "format":
+          outputFormat =
+            operation.format === "auto"
+              ? negotiateFormat(accept, inputFormat)
+              : operation.format;
+          outputQuality = operation.quality;
+          break;
+        case "padding":
+          image.extend({
+            top: operation.top,
+            right: operation.right,
+            bottom: operation.bottom,
+            left: operation.left,
+            background: operation.background,
+          });
+          break;
+        case "flip":
+          image.flip();
+          break;
+        case "flop":
+          image.flop();
+          break;
+        case "tint":
+          image.tint(operation.color);
+          break;
+        case "adjust":
+          image.modulate({
+            ...(operation.brightness === undefined
+              ? {}
+              : { brightness: operation.brightness }),
+            ...(operation.saturation === undefined
+              ? {}
+              : { saturation: operation.saturation }),
+          });
+          if (operation.contrast !== undefined) {
+            const multiplier = operation.contrast + 1;
+            image.linear(multiplier, 128 * (1 - multiplier));
+          }
+          break;
+        case "roundedCorners":
+          roundedRadius = operation.radius;
+          break;
+      }
+    } finally {
+      observeOperation?.(
+        operation.op,
+        (performance.now() - operationStarted) / 1000,
+      );
     }
   }
 

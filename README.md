@@ -15,6 +15,8 @@
 - SHA-256 API key digests with optional route scopes, per-key request limits, exact-origin CORS, and browser security headers.
 - SVG uploads are rejected; image watermarks accept PNG only and responses are rasterized.
 - Optional rembg background removal plugin.
+- Prometheus metrics for HTTP traffic, operation latency, cache, queue, in-flight transforms, and errors; optional OpenTelemetry traces.
+- Provisioned Grafana dashboard and a Compose `monitoring` profile.
 
 ## Before and after
 
@@ -183,6 +185,30 @@ All settings are environment variables validated at startup. See [.env.example](
 | `BATCH_RESULT_TTL_SECONDS`                      | `86400`                            | Job and output retention period                                  |
 | `WEBHOOK_SIGNING_SECRET`                        | unset                              | HMAC key for optional completion webhooks                        |
 | `REMOVE_BACKGROUND_ENABLED`                     | `false`                            | Enable the optional rembg plugin                                 |
+| `OTEL_ENABLED`                                  | `false`                            | Enable OpenTelemetry tracing and Fastify request spans           |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`                   | `http://localhost:4318`            | OTLP/HTTP collector base URL; traces are sent to `/v1/traces`    |
+| `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` | `admin` / local-only placeholder   | Local dashboard login for Compose monitoring profile             |
+| `PROMETHEUS_PORT` / `GRAFANA_PORT`              | `9090` / `3001`                    | Loopback ports for local monitoring services                     |
+
+## Observability
+
+`GET /metrics` exports Prometheus text format. Route labels use Fastify route templates to avoid source URLs and high-cardinality labels. The service records request counts and latency, per-operation transform duration, cache hits/misses, BullMQ waiting/active/delayed depth, in-flight transforms, and HTTP errors by stable code. Request logs keep Fastify request IDs and redact the full URL plus API-key, authorization, and cookie headers; signed query parameters therefore never appear in request logs.
+
+Start the API, Prometheus, and Grafana locally (copy `.env.example` to `.env` first):
+
+```sh
+docker compose --profile monitoring up --build
+```
+
+Open [Grafana](http://localhost:3001) to see the provisioned **Image Craft Service** dashboard. Prometheus scrapes the API every five seconds; its UI is at [localhost:9090](http://localhost:9090). The Compose ports bind to loopback. Change `GRAFANA_ADMIN_PASSWORD` before exposing Grafana beyond the local machine, and keep `/metrics` behind trusted network access in deployed environments.
+
+Generate local request and transform samples for the dashboard:
+
+```sh
+node scripts/observability-load-test.mjs http://127.0.0.1:3000 40
+```
+
+For traces, set `OTEL_ENABLED=true` and point `OTEL_EXPORTER_OTLP_ENDPOINT` at an OTLP/HTTP collector. Fastify creates request spans; the service adds child spans for image fetch, transform, and cache operations. Request IDs are attached to spans for log correlation. Tracing remains off unless enabled.
 
 ## Security
 
@@ -198,7 +224,6 @@ Set `CORS_ORIGINS` to exact origins such as `https://app.example.com`; requests 
 
 - S3-compatible storage adapter
 - Richer identity providers and quota policies
-- Metrics and tracing
 - More formats and animation controls
 - Reproducible published benchmarks
 

@@ -28,6 +28,8 @@ const testConfig: AppConfig = {
   API_RATE_LIMIT: 120,
   API_RATE_WINDOW_MS: 60_000,
   CORS_ORIGINS: "",
+  OTEL_ENABLED: false,
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://localhost:4318",
   IMAGE_PROCESSING_CONCURRENCY: 2,
   MAX_OPS_CHAIN: 20,
   API_KEYS: "",
@@ -207,6 +209,8 @@ describe("HTTP API", () => {
       ].schema.properties.file.format,
     ).toBe("binary");
     expect(docs.json().paths).toHaveProperty("/v1/hash/{*}");
+    expect(docs.json().paths).toHaveProperty("/metrics");
+    expect(docs.json().info.version).toBe("0.6.0");
     expect(docs.json().paths["/v1/img/{ops}/{*}"]?.get?.parameters).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "sig", in: "query" }),
@@ -214,6 +218,56 @@ describe("HTTP API", () => {
         expect.objectContaining({ name: "if-none-match", in: "header" }),
       ]),
     );
+  });
+
+  it("exports request, operation, cache, in-flight, and error metrics", async () => {
+    const metricsApp = await createApp(
+      testConfig,
+      new MemoryStorage(),
+      undefined,
+      undefined,
+      {
+        remoteImageFetcher: async () => ({
+          body: image,
+          contentType: "image/jpeg",
+        }),
+      },
+    );
+    await metricsApp.ready();
+    const path = "/v1/img/w_4/https%3A%2F%2Fexample.com%2Fmetrics.jpg";
+    expect((await metricsApp.inject(path)).statusCode).toBe(200);
+    expect((await metricsApp.inject(path)).statusCode).toBe(200);
+    const invalid = await metricsApp.inject(
+      "/v1/img/w_-1/https%3A%2F%2Fexample.com%2Fmetrics.jpg",
+    );
+    expect(invalid.statusCode).toBe(400);
+
+    const response = await metricsApp.inject("/metrics");
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toContain("text/plain");
+    expect(response.body).toContain("image_craft_http_requests_total");
+    expect(response.body).toContain(
+      "image_craft_http_request_duration_seconds",
+    );
+    expect(response.body).toContain(
+      'image_craft_transform_operation_duration_seconds_count{operation="resize"} 1',
+    );
+    expect(response.body).toContain(
+      'image_craft_cache_requests_total{result="hit"} 1',
+    );
+    expect(response.body).toContain(
+      'image_craft_cache_requests_total{result="miss"} 1',
+    );
+    expect(response.body).toContain(
+      'image_craft_errors_total{code="INVALID_URL_OPERATIONS"} 1',
+    );
+    expect(response.body).not.toContain("metrics.jpg");
+    expect(response.body).not.toContain("example.com");
+    expect(response.body).toContain(
+      'image_craft_queue_depth{state="waiting"} 0',
+    );
+    expect(response.body).toContain("image_craft_transforms_in_flight 0");
+    await metricsApp.close();
   });
 
   it("negotiates f_auto from Accept and varies cache output by format", async () => {

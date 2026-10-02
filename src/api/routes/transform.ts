@@ -17,6 +17,8 @@ import { negotiateFormat } from "../../core/engine.js";
 import type { Storage } from "../../storage/storage.js";
 import { operationsSchema, type Operation } from "../schemas/operations.js";
 import { SingleFlight } from "../../core/single-flight.js";
+import type { ServiceMetrics } from "../../observability/metrics.js";
+import { withSpan } from "../../observability/tracing.js";
 
 const jsonOpsSchema = z.object({ ops: operationsSchema });
 export async function transformRoutes(
@@ -27,9 +29,10 @@ export async function transformRoutes(
     plugins?: PluginRegistry;
     processingLimiter?: ConcurrencyLimiter;
     remoteImageFetcher?: typeof fetchRemoteImage;
+    metrics?: ServiceMetrics;
   },
 ): Promise<void> {
-  const { config, storage } = options;
+  const { config, storage, metrics } = options;
   const plugins = options.plugins ?? createPluginRegistry(config);
   const { processingLimiter } = options;
   const fetchImage = options.remoteImageFetcher ?? fetchRemoteImage;
@@ -123,14 +126,21 @@ export async function transformRoutes(
           code: "OPS_CHAIN_TOO_LONG",
         });
       if (hasAutoFormat(parsed.data)) reply.header("Vary", "Accept");
-      const result = await runImageOperations(
-        image,
-        parsed.data,
-        plugins,
-        config.MAX_INPUT_PIXELS,
-        config.MAX_OUTPUT_DIMENSION,
-        processingLimiter,
-        request.headers.accept,
+      const result = await withSpan(
+        "image.transform",
+        { "image.operation_count": parsed.data.length },
+        () =>
+          runImageOperations(
+            image,
+            parsed.data,
+            plugins,
+            config.MAX_INPUT_PIXELS,
+            config.MAX_OUTPUT_DIMENSION,
+            processingLimiter,
+            request.headers.accept,
+            (operation, seconds) =>
+              metrics?.recordOperation(operation, seconds),
+          ),
       );
       return reply.type(result.contentType).send(result.buffer);
     },
@@ -322,8 +332,11 @@ export async function transformRoutes(
         "Cache-Control",
         `public, max-age=${config.CACHE_MAX_AGE_SECONDS}`,
       );
-      let output = await storage.get(key);
+      let output = await withSpan("image.cache.get", { "cache.key": key }, () =>
+        storage.get(key),
+      );
       const wasCacheHit = output !== undefined;
+      metrics?.recordCacheResult(wasCacheHit ? "HIT" : "MISS");
       reply.header("X-Cache", wasCacheHit ? "HIT" : "MISS");
       let contentType = contentTypeFor(outputFormat);
       if (output === undefined) {
@@ -332,23 +345,37 @@ export async function transformRoutes(
           if (concurrentCacheValue !== undefined)
             return { buffer: concurrentCacheValue, contentType };
 
-          const remote = await fetchImage(source.toString(), {
-            allowedHosts: config.ALLOWED_HOSTS.split(",")
-              .map((host) => host.trim().toLowerCase())
-              .filter(Boolean),
-            timeoutMs: config.REQUEST_TIMEOUT_MS,
-            maxBytes: config.MAX_UPLOAD_BYTES,
-          });
-          const result = await runImageOperations(
-            remote.body,
-            parsedOps,
-            plugins,
-            config.MAX_INPUT_PIXELS,
-            config.MAX_OUTPUT_DIMENSION,
-            processingLimiter,
-            request.headers.accept,
+          const remote = await withSpan(
+            "image.fetch",
+            { "server.address": source.hostname },
+            () =>
+              fetchImage(source.toString(), {
+                allowedHosts: config.ALLOWED_HOSTS.split(",")
+                  .map((host) => host.trim().toLowerCase())
+                  .filter(Boolean),
+                timeoutMs: config.REQUEST_TIMEOUT_MS,
+                maxBytes: config.MAX_UPLOAD_BYTES,
+              }),
           );
-          await storage.set(key, result.buffer, config.CACHE_MAX_AGE_SECONDS);
+          const result = await withSpan(
+            "image.transform",
+            { "image.operation_count": parsedOps.length },
+            () =>
+              runImageOperations(
+                remote.body,
+                parsedOps,
+                plugins,
+                config.MAX_INPUT_PIXELS,
+                config.MAX_OUTPUT_DIMENSION,
+                processingLimiter,
+                request.headers.accept,
+                (operation, seconds) =>
+                  metrics?.recordOperation(operation, seconds),
+              ),
+          );
+          await withSpan("image.cache.set", { "cache.key": key }, () =>
+            storage.set(key, result.buffer, config.CACHE_MAX_AGE_SECONDS),
+          );
           return { buffer: result.buffer, contentType: result.contentType };
         });
         output = transformed.buffer;

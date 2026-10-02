@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here.
 
+## [0.6.0] - 2026-10-02
+
+### Added
+
+- Prometheus `/metrics` for HTTP request count/latency, per-operation transform duration, cache results, queue depth, in-flight transforms, and errors by code.
+- Optional OpenTelemetry Fastify request tracing and fetch, transform, and cache spans, with request ID correlation.
+- Request-log redaction for full URLs and credential headers.
+- Provisioned Grafana dashboard and Prometheus + Grafana Docker Compose `monitoring` profile.
+
 ## [0.5.0] - 2026-10-02
 
 ### Security

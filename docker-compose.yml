@@ -10,6 +10,8 @@ services:
       CACHE_DIR: /var/cache/image-craft
       QUEUE_ENABLED: ${QUEUE_ENABLED:-false}
       REDIS_URL: redis://redis:6379
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318}
       REMOVE_BACKGROUND_ENABLED: ${REMOVE_BACKGROUND_ENABLED:-false}
       REMBG_URL: http://rembg:7000
     volumes:
@@ -42,7 +44,42 @@ services:
       - rembg-models:/root/.rembg
     restart: unless-stopped
 
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    profiles: [monitoring]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - image-craft-service
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    profiles: [monitoring]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-local-dev-only-change-me}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3001}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboard.json:/var/lib/grafana/dashboards/image-craft-service.json:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
 volumes:
   image-cache:
   redis-data:
   rembg-models:
+  prometheus-data:
+  grafana-data:

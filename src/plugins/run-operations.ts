@@ -14,6 +14,7 @@ export async function runImageOperations(
   maxDimension: number,
   limiter?: ConcurrencyLimiter,
   accept?: string,
+  observeOperation?: (operation: string, durationSeconds: number) => void,
 ): Promise<TransformResult> {
   if (limiter)
     return limiter.run(() =>
@@ -24,6 +25,7 @@ export async function runImageOperations(
         maxPixels,
         maxDimension,
         accept,
+        observeOperation,
       ),
     );
   return runImageOperationsUnbounded(
@@ -33,6 +35,7 @@ export async function runImageOperations(
     maxPixels,
     maxDimension,
     accept,
+    observeOperation,
   );
 }
 
@@ -43,6 +46,7 @@ async function runImageOperationsUnbounded(
   maxPixels: number,
   maxDimension: number,
   accept?: string,
+  observeOperation?: (operation: string, durationSeconds: number) => void,
 ): Promise<TransformResult> {
   await validateImage(input, maxPixels);
   let buffer = input;
@@ -68,6 +72,8 @@ async function runImageOperationsUnbounded(
         [...pending, { op: "format", format: "png" }],
         maxPixels,
         maxDimension,
+        undefined,
+        observeOperation,
       );
       buffer = prepared.buffer;
       pending = [];
@@ -101,6 +107,7 @@ async function runImageOperationsUnbounded(
       maxPixels,
       maxDimension,
       accept,
+      observeOperation,
     );
   }
   return pluginResult;

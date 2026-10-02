@@ -15,6 +15,7 @@ import type {
 } from "./types.js";
 import { ConcurrencyLimiter } from "../security/concurrency.js";
 import { validateImage } from "../security/limits.js";
+import { withSpan } from "../observability/tracing.js";
 
 export async function processBatch(
   input: BatchRequest,
@@ -25,6 +26,7 @@ export async function processBatch(
   processingLimiter = new ConcurrencyLimiter(
     config.IMAGE_PROCESSING_CONCURRENCY,
   ),
+  observeOperation?: (operation: string, durationSeconds: number) => void,
 ): Promise<BatchJobResult> {
   const files: BatchResultFile[] = [];
   const errors: BatchJobResult["errors"] = [];
@@ -40,21 +42,33 @@ export async function processBatch(
       const sourceBuffer = source.startsWith("file_")
         ? await loadOwnedUpload(storage, source, input.apiKeyId)
         : (
-            await fetchRemoteImage(source, {
-              allowedHosts,
-              timeoutMs: config.REQUEST_TIMEOUT_MS,
-              maxBytes: config.MAX_UPLOAD_BYTES,
-            })
+            await withSpan(
+              "image.fetch",
+              { "server.address": new URL(source).hostname },
+              () =>
+                fetchRemoteImage(source, {
+                  allowedHosts,
+                  timeoutMs: config.REQUEST_TIMEOUT_MS,
+                  maxBytes: config.MAX_UPLOAD_BYTES,
+                }),
+            )
           ).body;
       if (!sourceBuffer) throw new AppError("Uploaded source has expired", 404);
       await validateImage(sourceBuffer, config.MAX_INPUT_PIXELS);
-      const result = await runImageOperations(
-        sourceBuffer,
-        input.ops,
-        plugins,
-        config.MAX_INPUT_PIXELS,
-        config.MAX_OUTPUT_DIMENSION,
-        processingLimiter,
+      const result = await withSpan(
+        "image.transform",
+        { "image.operation_count": input.ops.length },
+        () =>
+          runImageOperations(
+            sourceBuffer,
+            input.ops,
+            plugins,
+            config.MAX_INPUT_PIXELS,
+            config.MAX_OUTPUT_DIMENSION,
+            processingLimiter,
+            undefined,
+            observeOperation,
+          ),
       );
       if (
         totalOutputBytes + result.buffer.byteLength >

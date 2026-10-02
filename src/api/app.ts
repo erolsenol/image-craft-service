@@ -19,6 +19,7 @@ import type { PluginRegistry } from "../plugins/interface.js";
 import { ConcurrencyLimiter } from "../security/concurrency.js";
 import { fetchRemoteImage } from "../security/ssrf.js";
 import { authenticateApiKey, requiredApiScope } from "../security/api-keys.js";
+import { ServiceMetrics } from "../observability/metrics.js";
 
 export interface AppDependencies {
   remoteImageFetcher?: typeof fetchRemoteImage;
@@ -32,11 +33,26 @@ export async function createApp(
   dependencies: AppDependencies = {},
 ) {
   const app = Fastify({
-    logger: { level: config.NODE_ENV === "development" ? "debug" : "info" },
+    logger: {
+      level: config.NODE_ENV === "development" ? "debug" : "info",
+      redact: {
+        paths: [
+          "req.url",
+          "req.headers.x-api-key",
+          "req.headers.authorization",
+          "req.headers.cookie",
+          "err.message",
+          "err.stack",
+        ],
+        censor: "[REDACTED]",
+      },
+    },
     requestIdHeader: "x-request-id",
     requestTimeout: config.REQUEST_TIMEOUT_MS,
     bodyLimit: config.MAX_UPLOAD_BYTES + 1024 * 1024,
   });
+  const metrics = new ServiceMetrics();
+  metrics.attach(app);
   const activeStorage =
     storage ?? new DiskStorage(config.CACHE_DIR, config.CACHE_MAX_SIZE_BYTES);
   const activePlugins = plugins ?? createPluginRegistry(config);
@@ -46,7 +62,13 @@ export async function createApp(
   const activeQueue =
     batchQueue ??
     (config.QUEUE_ENABLED
-      ? new BullMqBatchQueue(config, activeStorage, app.log, processingLimiter)
+      ? new BullMqBatchQueue(
+          config,
+          activeStorage,
+          app.log,
+          processingLimiter,
+          metrics,
+        )
       : undefined);
   let active = 0;
   const trackedRequests = new WeakSet<FastifyRequest>();
@@ -155,8 +177,7 @@ export async function createApp(
       );
     return payload;
   });
-  app.setErrorHandler((error, _request, reply) => {
-    app.log.error({ err: error }, "Request failed");
+  app.setErrorHandler((error, request, reply) => {
     const statusCode =
       error instanceof AppError
         ? error.statusCode
@@ -164,6 +185,13 @@ export async function createApp(
           ? Number(error.statusCode)
           : 500;
     const status = statusCode >= 400 && statusCode < 500 ? statusCode : 500;
+    request.log.error(
+      {
+        errorName: error instanceof Error ? error.name : "UnknownError",
+        statusCode: status,
+      },
+      "Request failed",
+    );
     const message =
       error instanceof AppError
         ? error.message
@@ -218,7 +246,7 @@ export async function createApp(
     openapi: {
       info: {
         title: "Image Craft Service",
-        version: "0.5.0",
+        version: "0.6.0",
         description: "Self-hosted image processing HTTP API",
       },
       servers: [{ url: "/" }],
@@ -235,6 +263,30 @@ export async function createApp(
     },
   });
   await app.register(swaggerUi, { routePrefix: "/docs" });
+  app.get(
+    "/metrics",
+    {
+      config: { otel: false },
+      schema: {
+        summary: "Prometheus metrics",
+        tags: ["Observability"],
+        response: {
+          200: {
+            description: "Prometheus text exposition format",
+            content: {
+              "text/plain; version=0.0.4; charset=utf-8": {
+                schema: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+    },
+    async (_request, reply) => {
+      const output = await metrics.render(activeQueue, processingLimiter);
+      return reply.type(metrics.registry.contentType).send(output);
+    },
+  );
   app.options("/v1/*", async (_request, reply) => reply.code(204).send());
   await app.register(healthRoutes, {
     ...(activeQueue ? { queue: activeQueue } : {}),
@@ -247,6 +299,7 @@ export async function createApp(
     ...(dependencies.remoteImageFetcher
       ? { remoteImageFetcher: dependencies.remoteImageFetcher }
       : {}),
+    metrics,
   });
   await app.register(batchRoutes, {
     config,

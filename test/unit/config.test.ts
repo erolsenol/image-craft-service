@@ -70,4 +70,27 @@ describe("security-related configuration bounds", () => {
       envSchema.safeParse({ CORS_ORIGINS: "https://app.example/path" }).success,
     ).toBe(false);
   });
+
+  it("keeps tracing disabled by default and validates the OTLP endpoint", () => {
+    expect(envSchema.parse({}).OTEL_ENABLED).toBe(false);
+    expect(
+      envSchema.safeParse({
+        OTEL_ENABLED: "true",
+        OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318",
+      }).success,
+    ).toBe(true);
+    expect(
+      envSchema.safeParse({ OTEL_EXPORTER_OTLP_ENDPOINT: "not-a-url" }).success,
+    ).toBe(false);
+    expect(
+      envSchema.safeParse({
+        OTEL_EXPORTER_OTLP_ENDPOINT: "ftp://collector.example:4318",
+      }).success,
+    ).toBe(false);
+    expect(
+      envSchema.safeParse({
+        OTEL_EXPORTER_OTLP_ENDPOINT: "https://user:secret@collector.example",
+      }).success,
+    ).toBe(false);
+  });
 });

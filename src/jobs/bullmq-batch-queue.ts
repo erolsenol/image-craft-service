@@ -13,6 +13,7 @@ import type {
 } from "./types.js";
 import { ConcurrencyLimiter } from "../security/concurrency.js";
 import { sendSignedWebhook } from "../security/webhook.js";
+import type { ServiceMetrics } from "../observability/metrics.js";
 
 const queueName = "image-craft-batch";
 const admissionScript = `
@@ -56,6 +57,7 @@ export class BullMqBatchQueue implements BatchQueue {
     processingLimiter = new ConcurrencyLimiter(
       config.IMAGE_PROCESSING_CONCURRENCY,
     ),
+    private readonly metrics?: ServiceMetrics,
   ) {
     this.connection = new Redis(config.REDIS_URL, {
       maxRetriesPerRequest: null,
@@ -85,6 +87,7 @@ export class BullMqBatchQueue implements BatchQueue {
           storage,
           (progress) => job.updateProgress(progress),
           processingLimiter,
+          (operation, seconds) => metrics?.recordOperation(operation, seconds),
         ),
       { connection: this.connection, concurrency: config.BATCH_CONCURRENCY },
     );
@@ -185,6 +188,23 @@ export class BullMqBatchQueue implements BatchQueue {
 
   isReady(): boolean {
     return this.connection.status === "ready";
+  }
+
+  async getQueueDepth(): Promise<{
+    waiting: number;
+    active: number;
+    delayed: number;
+  }> {
+    const counts = await this.queue.getJobCounts(
+      "waiting",
+      "active",
+      "delayed",
+    );
+    return {
+      waiting: counts.waiting ?? 0,
+      active: counts.active ?? 0,
+      delayed: counts.delayed ?? 0,
+    };
   }
 
   private admissionKeys(apiKeyId: string) {
