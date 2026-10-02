@@ -1,5 +1,10 @@
 import type { FastifyInstance } from "fastify";
-export async function healthRoutes(app: FastifyInstance): Promise<void> {
+import type { BatchQueue } from "../../jobs/types.js";
+
+export async function healthRoutes(
+  app: FastifyInstance,
+  options: { queue?: BatchQueue } = {},
+): Promise<void> {
   app.get(
     "/health",
     {
@@ -17,9 +22,14 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
       schema: {
         response: {
           200: { type: "object", properties: { status: { type: "string" } } },
+          503: { type: "object", properties: { status: { type: "string" } } },
         },
       },
     },
-    async () => ({ status: "ready" }),
+    async (_request, reply) => {
+      if (options.queue && !options.queue.isReady())
+        return reply.code(503).send({ status: "not ready" });
+      return { status: "ready" };
+    },
   );
 }

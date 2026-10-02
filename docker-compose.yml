@@ -8,6 +8,8 @@ services:
     environment:
       HOST: 0.0.0.0
       CACHE_DIR: /var/cache/image-craft
+      QUEUE_ENABLED: ${QUEUE_ENABLED:-false}
+      REDIS_URL: redis://redis:6379
     volumes:
       - image-cache:/var/cache/image-craft
     restart: unless-stopped
@@ -15,5 +17,19 @@ services:
     tmpfs:
       - /tmp:size=64m,noexec,nosuid
 
+  redis:
+    image: redis:7-alpine
+    profiles: [queue]
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
 volumes:
   image-cache:
+  redis-data:
