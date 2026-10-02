@@ -16,7 +16,11 @@ export function createCacheKey(
       case "sharpen":
         return { ...operation, sigma: operation.sigma ?? 1 };
       case "watermark":
-        return { ...operation, gravity: operation.gravity ?? "southeast" };
+        return {
+          ...operation,
+          gravity: operation.gravity ?? "southeast",
+          opacity: operation.opacity ?? 1,
+        };
       default:
         return { ...operation };
     }

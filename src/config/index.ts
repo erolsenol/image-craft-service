@@ -50,6 +50,7 @@ export const envSchema = z
       .positive()
       .max(4)
       .default(2),
+    MAX_OPS_CHAIN: z.coerce.number().int().positive().max(50).default(20),
     ALLOWED_HOSTS: z.string().default(""),
     SIGNING_SECRET: z.string().optional(),
     CACHE_DIR: z.string().default("/tmp/image-craft-cache"),

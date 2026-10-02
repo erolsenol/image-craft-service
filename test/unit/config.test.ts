@@ -37,4 +37,9 @@ describe("security-related configuration bounds", () => {
       }).success,
     ).toBe(false);
   });
+
+  it("bounds configurable operation chain length", () => {
+    expect(envSchema.safeParse({ MAX_OPS_CHAIN: 51 }).success).toBe(false);
+    expect(envSchema.safeParse({ MAX_OPS_CHAIN: 32 }).success).toBe(true);
+  });
 });

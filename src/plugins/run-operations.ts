@@ -13,6 +13,7 @@ export async function runImageOperations(
   maxPixels: number,
   maxDimension: number,
   limiter?: ConcurrencyLimiter,
+  accept?: string,
 ): Promise<TransformResult> {
   if (limiter)
     return limiter.run(() =>
@@ -22,6 +23,7 @@ export async function runImageOperations(
         plugins,
         maxPixels,
         maxDimension,
+        accept,
       ),
     );
   return runImageOperationsUnbounded(
@@ -30,6 +32,7 @@ export async function runImageOperations(
     plugins,
     maxPixels,
     maxDimension,
+    accept,
   );
 }
 
@@ -39,6 +42,7 @@ async function runImageOperationsUnbounded(
   plugins: PluginRegistry,
   maxPixels: number,
   maxDimension: number,
+  accept?: string,
 ): Promise<TransformResult> {
   await validateImage(input, maxPixels);
   let buffer = input;
@@ -96,6 +100,7 @@ async function runImageOperationsUnbounded(
       postPluginOperations,
       maxPixels,
       maxDimension,
+      accept,
     );
   }
   return pluginResult;

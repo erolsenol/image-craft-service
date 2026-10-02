@@ -2,7 +2,15 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.3.0] - 2026-10-02
+
+### Added
+
+- Accept-based `f_auto` format negotiation with `Vary: Accept` and source-format fallback.
+- Smart and focal-point crops, padding, flips, tint, color adjustments, image watermarks, and rounded corners.
+- EXIF auto-orientation, GPS-safe metadata stripping, and remote BlurHash previews.
+- Strict operation validation, configurable operation-chain limits, and machine-readable validation errors.
+- Per-operation visual regression fixtures using perceptual pixel comparison.
 
 ## [0.2.0] - 2026-10-02
 

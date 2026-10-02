@@ -24,6 +24,7 @@ const testConfig: AppConfig = {
   REMOTE_TRANSFORM_RATE_LIMIT: 60,
   REMOTE_TRANSFORM_RATE_WINDOW_MS: 60_000,
   IMAGE_PROCESSING_CONCURRENCY: 2,
+  MAX_OPS_CHAIN: 20,
   ALLOWED_HOSTS: "",
   SIGNING_SECRET: undefined,
   CACHE_DIR: "/tmp/image-craft-test-cache",
@@ -159,6 +160,7 @@ describe("HTTP API", () => {
     expect(docs.json().paths).toHaveProperty("/v1/metadata");
     expect(docs.json().paths).toHaveProperty("/v1/batch");
     expect(docs.json().paths).toHaveProperty("/v1/jobs/{id}");
+    expect(docs.json().paths).toHaveProperty("/v1/hash/{*}");
     expect(docs.json().paths["/v1/img/{ops}/{*}"]?.get?.parameters).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "sig", in: "query" }),
@@ -166,6 +168,134 @@ describe("HTTP API", () => {
         expect.objectContaining({ name: "if-none-match", in: "header" }),
       ]),
     );
+  });
+
+  it("negotiates f_auto from Accept and varies cache output by format", async () => {
+    const autoApp = await createApp(
+      testConfig,
+      new MemoryStorage(),
+      undefined,
+      undefined,
+      {
+        remoteImageFetcher: async () => ({
+          body: image,
+          contentType: "image/jpeg",
+        }),
+      },
+    );
+    await autoApp.ready();
+    const path = "/v1/img/f_auto/https%3A%2F%2Fexample.com%2Fauto.jpg";
+    const avif = await autoApp.inject({
+      url: path,
+      headers: { accept: "image/avif,image/webp" },
+    });
+    const webp = await autoApp.inject({
+      url: path,
+      headers: { accept: "image/webp" },
+    });
+    const original = await autoApp.inject({
+      url: path,
+      headers: { accept: "image/jpeg" },
+    });
+    expect(avif.headers["content-type"]).toContain("image/avif");
+    expect(webp.headers["content-type"]).toContain("image/webp");
+    expect(original.headers["content-type"]).toContain("image/jpeg");
+    expect(avif.headers.vary).toContain("Accept");
+    expect(webp.headers.vary).toContain("Accept");
+    const upload = multipart(image, {
+      ops: '[{"op":"format","format":"auto"}]',
+    });
+    const uploaded = await autoApp.inject({
+      method: "POST",
+      url: "/v1/transform",
+      headers: {
+        accept: "image/webp",
+        "content-type": upload.contentType,
+      },
+      payload: upload.payload,
+    });
+    expect(uploaded.headers["content-type"]).toContain("image/webp");
+    expect(uploaded.headers.vary).toContain("Accept");
+    await autoApp.close();
+  });
+
+  it("generates a BlurHash for an SSRF-checked remote image", async () => {
+    const hashApp = await createApp(
+      testConfig,
+      new MemoryStorage(),
+      undefined,
+      undefined,
+      {
+        remoteImageFetcher: async () => ({
+          body: image,
+          contentType: "image/jpeg",
+        }),
+      },
+    );
+    await hashApp.ready();
+    const result = await hashApp.inject(
+      "/v1/hash/https%3A%2F%2Fexample.com%2Fhash.jpg",
+    );
+    expect(result.statusCode).toBe(200);
+    expect(result.json()).toMatchObject({
+      width: expect.any(Number),
+      height: expect.any(Number),
+      hash: expect.any(String),
+    });
+    await hashApp.close();
+  });
+
+  it("returns machine-readable errors for unknown operations and overlong chains", async () => {
+    const server = await app;
+    const invalid = multipart(image, { ops: '[{"op":"invented"}]' });
+    const response = await server.inject({
+      method: "POST",
+      url: "/v1/transform",
+      headers: { "content-type": invalid.contentType },
+      payload: invalid.payload,
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ code: "INVALID_OPERATIONS" });
+
+    const limitedApp = await createApp(
+      { ...testConfig, MAX_OPS_CHAIN: 1 },
+      new MemoryStorage(),
+    );
+    await limitedApp.ready();
+    const tooLong = multipart(image, {
+      ops: '[{"op":"grayscale"},{"op":"flip"}]',
+    });
+    const rejected = await limitedApp.inject({
+      method: "POST",
+      url: "/v1/transform",
+      headers: { "content-type": tooLong.contentType },
+      payload: tooLong.payload,
+    });
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json()).toMatchObject({ code: "OPS_CHAIN_TOO_LONG" });
+    await limitedApp.close();
+  });
+
+  it("enforces operation-chain limits on batch requests", async () => {
+    const queue = new MemoryBatchQueue();
+    const batchApp = await createApp(
+      { ...testConfig, QUEUE_ENABLED: true, MAX_OPS_CHAIN: 1 },
+      new MemoryStorage(),
+      queue,
+    );
+    await batchApp.ready();
+    const response = await batchApp.inject({
+      method: "POST",
+      url: "/v1/batch",
+      payload: {
+        sources: ["https://example.com/image.jpg"],
+        ops: [{ op: "flip" }, { op: "flop" }],
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ code: "OPS_CHAIN_TOO_LONG" });
+    expect(queue.input).toHaveLength(0);
+    await batchApp.close();
   });
 
   it("rate limits remote transforms by client IP", async () => {
@@ -334,6 +464,11 @@ describe("HTTP API", () => {
     expect(response.statusCode).toBe(403);
     expect(response.headers["x-cache"]).toBe("MISS");
     expect(response.body).not.toContain("stack");
+    const hashResponse = await server.inject(
+      "/v1/hash/http://127.0.0.1/private.jpg",
+    );
+    expect(hashResponse.statusCode).toBe(403);
+    expect(hashResponse.body).not.toContain("stack");
   });
 
   it("returns a cache hit for a stored remote transform", async () => {

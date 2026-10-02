@@ -53,7 +53,12 @@ export async function batchRoutes(
         response: {
           400: {
             type: "object",
-            properties: { error: { type: "string" } },
+            properties: {
+              error: { type: "string" },
+              code: { type: "string" },
+            },
+            description:
+              "Invalid batch input; the optional code field identifies operation-chain errors",
           },
           202: {
             type: "object",
@@ -75,12 +80,31 @@ export async function batchRoutes(
         return reply.code(503).send({ error: "Batch jobs are disabled" });
       if (!queue.isReady())
         return reply.code(503).send({ error: "Batch queue is unavailable" });
+      if (
+        typeof request.body === "object" &&
+        request.body !== null &&
+        "ops" in request.body &&
+        Array.isArray(request.body.ops) &&
+        request.body.ops.length > config.MAX_OPS_CHAIN
+      )
+        return reply.code(400).send({
+          error: `Operation chain exceeds ${config.MAX_OPS_CHAIN} operations`,
+          code: "OPS_CHAIN_TOO_LONG",
+        });
       const parsed = batchRequestSchema.safeParse(request.body);
       if (
         !parsed.success ||
         parsed.data.sources.length > config.BATCH_MAX_ITEMS
       )
-        return reply.code(400).send({ error: "Invalid batch request" });
+        return reply.code(400).send({
+          error: "Invalid batch request or operation chain",
+          code: parsed.success ? "BATCH_LIMIT_EXCEEDED" : "INVALID_OPERATIONS",
+        });
+      if (parsed.data.ops.length > config.MAX_OPS_CHAIN)
+        return reply.code(400).send({
+          error: `Operation chain exceeds ${config.MAX_OPS_CHAIN} operations`,
+          code: "OPS_CHAIN_TOO_LONG",
+        });
       const id = await queue.enqueue(parsed.data);
       return reply.code(202).send({
         id,

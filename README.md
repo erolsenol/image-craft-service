@@ -6,7 +6,8 @@
 
 ## Features
 
-- Resize, crop, rotate, blur, sharpen, watermark, grayscale, and convert to JPEG, PNG, WebP, or AVIF.
+- Resize, smart and focal-point crop, padding, rotate, flip/flop, tint, color adjustments, watermarks, rounded corners, blur, sharpen, grayscale, and convert to JPEG, PNG, WebP, or AVIF.
+- Accept-based auto format selection (AVIF, then WebP, then source format) and BlurHash previews.
 - Transform uploaded images or public remote URLs; strip metadata from output.
 - Disk cache with TTL, size-bounded LRU eviction, request coalescing, and `X-Cache` / ETag headers.
 - Optional Redis-backed batch jobs that return ZIP downloads.
@@ -92,6 +93,7 @@ Choose based on your runtime, deployment model, and required transforms. This pr
 | --------------------------- | ---------------------------------------------------- |
 | `POST /v1/transform`        | Upload and transform an image                        |
 | `GET /v1/img/:ops/*src`     | Fetch and transform a public remote image            |
+| `GET /v1/hash/*src`         | Generate a BlurHash preview for a remote image       |
 | `POST /v1/metadata`         | Read dimensions, format, and EXIF without GPS fields |
 | `POST /v1/batch`            | Submit URL transforms when Redis jobs are enabled    |
 | `GET /v1/jobs/:id`          | Poll a batch job or download its ZIP                 |
@@ -100,7 +102,25 @@ Choose based on your runtime, deployment model, and required transforms. This pr
 
 For the remote transform endpoint, OpenAPI documents `sig`, `expires`, `If-None-Match`, and the `X-Cache`, `ETag`, and `Cache-Control` response headers.
 
+Invalid operation requests return a JSON `error` and machine-readable `code`, such as `INVALID_OPERATIONS` or `OPS_CHAIN_TOO_LONG`.
+
 For URL transforms, operation tokens include `w`, `h`, `fit`, `rot`, `blur`, `sharp`, `gray_1`, `wm`, `f`, and `q`. Multipart requests accept a JSON `ops` array. See the examples above and [Swagger UI](http://localhost:3000/docs) for request schemas.
+
+Use `f_auto` to negotiate AVIF, WebP, or the original image format from the request's `Accept` header. The response includes `Vary: Accept`.
+
+```sh
+curl -H 'Accept: image/avif,image/webp,image/*' \
+  'http://localhost:3000/v1/img/w_400,h_300,fit_cover,f_auto/https://example.com/photo.jpg' \
+  --output photo.avif
+```
+
+Additional URL tokens include `strategy_attention` or `strategy_entropy`, `fx_0.5,fy_0.4`, `padtop_16,padleft_16,bg_%23ffffff`, `flip_1`, `flop_1`, `tint_%23ffcc00`, `bright_1.1`, `contrast_0.1`, `sat_1.2`, and `radius_24`. Image watermarks use a base64url encoded PNG with `wmimg_<data>,wmop_0.5,pos_southeast`. Unknown operation names are rejected; operation chains are capped by `MAX_OPS_CHAIN`.
+
+Get a compact BlurHash preview for a remote image:
+
+```sh
+curl 'http://localhost:3000/v1/hash/https://example.com/photo.jpg'
+```
 
 ## Configuration
 
@@ -115,6 +135,7 @@ All settings are environment variables validated at startup. See [.env.example](
 | `REMOTE_TRANSFORM_RATE_LIMIT`     | `60`                               | Remote transforms allowed per IP per window        |
 | `REMOTE_TRANSFORM_RATE_WINDOW_MS` | `60000`                            | Remote transform rate-limit window in milliseconds |
 | `IMAGE_PROCESSING_CONCURRENCY`    | `2`                                | Concurrent image and plugin operations             |
+| `MAX_OPS_CHAIN`                   | `20`                               | Maximum operations accepted in one transform chain |
 | `ALLOWED_HOSTS`                   | unset                              | Optional comma-separated remote host allowlist     |
 | `SIGNING_SECRET`                  | unset                              | Require signed remote transform URLs               |
 | `CACHE_MAX_SIZE_BYTES`            | `536870912`                        | Maximum disk cache size                            |

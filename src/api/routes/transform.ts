@@ -1,5 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { createHash } from "node:crypto";
+import sharp from "sharp";
+import { encode } from "blurhash";
 import { z } from "zod";
 import type { AppConfig } from "../../config/index.js";
 import { AppError } from "../../core/errors.js";
@@ -11,6 +13,7 @@ import { fetchRemoteImage } from "../../security/ssrf.js";
 import { verifyTransformSignature } from "../../security/signing.js";
 import { validateImage } from "../../security/limits.js";
 import { createCacheKey, getOutputFormat } from "../../storage/cache-key.js";
+import { negotiateFormat } from "../../core/engine.js";
 import type { Storage } from "../../storage/storage.js";
 import { operationsSchema, type Operation } from "../schemas/operations.js";
 import { SingleFlight } from "../../core/single-flight.js";
@@ -66,7 +69,11 @@ export async function transformRoutes(
             format: "binary",
             description: "Transformed image",
           },
-          400: { $ref: "Error#" },
+          400: {
+            type: "object",
+            required: ["error", "code"],
+            properties: { error: { type: "string" }, code: { type: "string" } },
+          },
         },
       },
     },
@@ -82,20 +89,40 @@ export async function transformRoutes(
           try {
             ops = JSON.parse(String(part.value));
           } catch {
-            return reply.code(400).send({ error: "Invalid ops JSON" });
+            return reply.code(400).send({
+              error: "Invalid ops JSON",
+              code: "OPS_JSON_INVALID",
+            });
           }
         }
       }
-      if (!image) return reply.code(400).send({ error: "file is required" });
-      const parsed = operationsSchema.safeParse(
-        Array.isArray(ops)
-          ? ops
-          : jsonOpsSchema.safeParse(ops).success
-            ? (ops as { ops: unknown[] }).ops
-            : undefined,
-      );
+      if (!image)
+        return reply.code(400).send({
+          error: "file is required",
+          code: "FILE_REQUIRED",
+        });
+      const operationValues = Array.isArray(ops)
+        ? ops
+        : jsonOpsSchema.safeParse(ops).success
+          ? (ops as { ops: unknown[] }).ops
+          : undefined;
+      if (operationValues && operationValues.length > config.MAX_OPS_CHAIN)
+        return reply.code(400).send({
+          error: `Operation chain exceeds ${config.MAX_OPS_CHAIN} operations`,
+          code: "OPS_CHAIN_TOO_LONG",
+        });
+      const parsed = operationsSchema.safeParse(operationValues);
       if (!parsed.success)
-        return reply.code(400).send({ error: "Invalid operations" });
+        return reply.code(400).send({
+          error: parsed.error.issues[0]?.message ?? "Invalid operations",
+          code: "INVALID_OPERATIONS",
+        });
+      if (parsed.data.length > config.MAX_OPS_CHAIN)
+        return reply.code(400).send({
+          error: `Operation chain exceeds ${config.MAX_OPS_CHAIN} operations`,
+          code: "OPS_CHAIN_TOO_LONG",
+        });
+      if (hasAutoFormat(parsed.data)) reply.header("Vary", "Accept");
       const result = await runImageOperations(
         image,
         parsed.data,
@@ -103,6 +130,7 @@ export async function transformRoutes(
         config.MAX_INPUT_PIXELS,
         config.MAX_OUTPUT_DIMENSION,
         processingLimiter,
+        request.headers.accept,
       );
       return reply.type(result.contentType).send(result.buffer);
     },
@@ -181,7 +209,8 @@ export async function transformRoutes(
           properties: {
             ops: {
               type: "string",
-              description: "Comma-separated image operations",
+              description:
+                "Comma-separated operations; supports f_auto Accept negotiation, smart/focal crop, padding, effects, watermarks, and rounded corners",
             },
             "*": { type: "string", description: "Remote image URL" },
           },
@@ -214,6 +243,7 @@ export async function transformRoutes(
               "X-Cache": { schema: { type: "string", enum: ["HIT", "MISS"] } },
               ETag: { schema: { type: "string" } },
               "Cache-Control": { schema: { type: "string" } },
+              Vary: { schema: { type: "string" } },
             },
           },
           304: {
@@ -223,6 +253,7 @@ export async function transformRoutes(
               "X-Cache": { schema: { type: "string", enum: ["HIT", "MISS"] } },
               ETag: { schema: { type: "string" } },
               "Cache-Control": { schema: { type: "string" } },
+              Vary: { schema: { type: "string" } },
             },
           },
           403: { $ref: "Error#" },
@@ -264,11 +295,28 @@ export async function transformRoutes(
         return reply.code(403).send({ error: "Invalid signature" });
       let parsedOps: Operation[];
       try {
-        parsedOps = parseCompactOps(request.params.ops);
-      } catch {
-        throw new AppError("Invalid URL operations", 400);
+        parsedOps = parseCompactOps(request.params.ops, config.MAX_OPS_CHAIN);
+      } catch (error) {
+        if (error instanceof Error && error.message === "OPS_CHAIN_TOO_LONG")
+          return reply.code(400).send({
+            error: `Operation chain exceeds ${config.MAX_OPS_CHAIN} operations`,
+            code: "OPS_CHAIN_TOO_LONG",
+          });
+        return reply.code(400).send({
+          error: "Invalid URL operations",
+          code: "INVALID_URL_OPERATIONS",
+        });
       }
-      const outputFormat = getOutputFormat(parsedOps);
+      if (parsedOps.length > config.MAX_OPS_CHAIN)
+        return reply.code(400).send({
+          error: `Operation chain exceeds ${config.MAX_OPS_CHAIN} operations`,
+          code: "OPS_CHAIN_TOO_LONG",
+        });
+      if (hasAutoFormat(parsedOps)) reply.header("Vary", "Accept");
+      const outputFormat = outputFormatForRequest(
+        parsedOps,
+        request.headers.accept,
+      );
       const key = createCacheKey(source, parsedOps, outputFormat);
       reply.header(
         "Cache-Control",
@@ -298,12 +346,20 @@ export async function transformRoutes(
             config.MAX_INPUT_PIXELS,
             config.MAX_OUTPUT_DIMENSION,
             processingLimiter,
+            request.headers.accept,
           );
           await storage.set(key, result.buffer, config.CACHE_MAX_AGE_SECONDS);
           return { buffer: result.buffer, contentType: result.contentType };
         });
         output = transformed.buffer;
         contentType = transformed.contentType;
+      }
+      if (outputFormat === "original") {
+        const metadata = await sharp(output).metadata();
+        contentType =
+          metadata.format === "heif" && metadata.compression === "av1"
+            ? "image/avif"
+            : contentTypeFor(metadata.format ?? "jpeg");
       }
 
       const etag = `"${createHash("sha256").update(output).digest("base64url")}"`;
@@ -313,10 +369,109 @@ export async function transformRoutes(
       return reply.type(contentType).send(output);
     },
   );
+
+  app.get<{ Params: { "*": string } }>(
+    "/v1/hash/*",
+    {
+      config: {
+        rateLimit: {
+          max: config.REMOTE_TRANSFORM_RATE_LIMIT,
+          timeWindow: config.REMOTE_TRANSFORM_RATE_WINDOW_MS,
+        },
+      },
+      schema: {
+        params: {
+          type: "object",
+          properties: {
+            "*": { type: "string", description: "Remote image URL" },
+          },
+        },
+        response: {
+          200: {
+            type: "object",
+            required: ["hash", "width", "height"],
+            properties: {
+              hash: { type: "string" },
+              width: { type: "integer" },
+              height: { type: "integer" },
+            },
+          },
+          400: {
+            type: "object",
+            required: ["error", "code"],
+            properties: { error: { type: "string" }, code: { type: "string" } },
+          },
+          403: { $ref: "Error#" },
+          429: { $ref: "Error#" },
+        },
+      },
+    },
+    async (request) => {
+      let source: URL;
+      try {
+        source = new URL(decodeURIComponent(request.params["*"]));
+      } catch {
+        throw new AppError("Invalid remote URL", 400);
+      }
+      const remote = await fetchImage(source.toString(), {
+        allowedHosts: config.ALLOWED_HOSTS.split(",")
+          .map((host) => host.trim().toLowerCase())
+          .filter(Boolean),
+        timeoutMs: config.REQUEST_TIMEOUT_MS,
+        maxBytes: config.MAX_UPLOAD_BYTES,
+      });
+      const makeHash = async () => {
+        await validateImage(remote.body, config.MAX_INPUT_PIXELS);
+        const resized = await sharp(remote.body, {
+          limitInputPixels: config.MAX_INPUT_PIXELS,
+        })
+          .rotate()
+          .resize(32, 32, { fit: "inside" })
+          .ensureAlpha()
+          .toColourspace("srgb")
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+        const componentsX = Math.min(4, resized.info.width);
+        const componentsY = Math.min(3, resized.info.height);
+        return {
+          hash: encode(
+            new Uint8ClampedArray(resized.data),
+            resized.info.width,
+            resized.info.height,
+            componentsX,
+            componentsY,
+          ),
+          width: resized.info.width,
+          height: resized.info.height,
+        };
+      };
+      return processingLimiter ? processingLimiter.run(makeHash) : makeHash();
+    },
+  );
 }
 
 function contentTypeFor(format: string): string {
-  return format === "jpeg" ? "image/jpeg" : `image/${format}`;
+  return format === "jpeg"
+    ? "image/jpeg"
+    : format === "original"
+      ? "application/octet-stream"
+      : `image/${format}`;
+}
+
+function hasAutoFormat(ops: readonly Operation[]): boolean {
+  return (
+    [...ops].reverse().find((operation) => operation.op === "format")
+      ?.format === "auto"
+  );
+}
+
+function outputFormatForRequest(
+  ops: readonly Operation[],
+  accept: string | undefined,
+): string {
+  return hasAutoFormat(ops)
+    ? negotiateFormat(accept, "original")
+    : getOutputFormat(ops);
 }
 
 function matchesEtag(header: string | undefined, etag: string): boolean {
@@ -327,31 +482,104 @@ function matchesEtag(header: string | undefined, etag: string): boolean {
   });
 }
 
-function parseCompactOps(value: string): Operation[] {
+function parseCompactOps(value: string, maxOperations: number): Operation[] {
   const groups = new Map<string, Record<string, unknown>>();
   const sequence: string[] = [];
   const categoryByKey: Record<string, string> = {
     w: "resize",
     h: "resize",
     fit: "resize",
+    strategy: "resize",
+    fx: "resize",
+    fy: "resize",
     l: "crop",
     t: "crop",
     cw: "crop",
     ch: "crop",
+    cstrategy: "crop",
+    cfx: "crop",
+    cfy: "crop",
     rot: "rotate",
     blur: "blur",
     sharp: "sharpen",
     gray: "grayscale",
     wm: "watermark",
+    wmimg: "watermark",
     grav: "watermark",
+    pos: "watermark",
+    wmop: "watermark",
     f: "format",
     q: "format",
+    padtop: "padding",
+    padright: "padding",
+    padbottom: "padding",
+    padleft: "padding",
+    bg: "padding",
+    flip: "flip",
+    flop: "flop",
+    tint: "tint",
+    bright: "adjust",
+    contrast: "adjust",
+    sat: "adjust",
+    radius: "roundedCorners",
   };
+  const properties: Record<string, string> = {
+    w: "width",
+    h: "height",
+    l: "left",
+    t: "top",
+    cw: "width",
+    ch: "height",
+    rot: "angle",
+    sharp: "sigma",
+    q: "quality",
+    fx: "fx",
+    fy: "fy",
+    cfx: "fx",
+    cfy: "fy",
+    cstrategy: "strategy",
+    padtop: "top",
+    padright: "right",
+    padbottom: "bottom",
+    padleft: "left",
+    bg: "background",
+    bright: "brightness",
+    sat: "saturation",
+    radius: "radius",
+    wmimg: "image",
+    pos: "position",
+    wmop: "opacity",
+  };
+  const numericKeys = new Set([
+    "w",
+    "h",
+    "l",
+    "t",
+    "cw",
+    "ch",
+    "rot",
+    "blur",
+    "sharp",
+    "q",
+    "fx",
+    "fy",
+    "cfx",
+    "cfy",
+    "wmop",
+    "padtop",
+    "padright",
+    "padbottom",
+    "padleft",
+    "bright",
+    "contrast",
+    "sat",
+    "radius",
+  ]);
   for (const token of value.split(",")) {
     const separator = token.indexOf("_");
     if (separator < 1) throw new Error("Invalid operation syntax");
     const key = token.slice(0, separator);
-    const raw = token.slice(separator + 1);
+    const raw = decodeURIComponent(token.slice(separator + 1));
     const category = categoryByKey[key];
     if (!category) throw new Error("Unsupported URL operation");
     if (!groups.has(category)) {
@@ -359,39 +587,32 @@ function parseCompactOps(value: string): Operation[] {
       sequence.push(category);
     }
     const group = groups.get(category)!;
-    if (
-      ["w", "h", "l", "t", "cw", "ch", "rot", "blur", "sharp", "q"].includes(
-        key,
-      )
-    ) {
+    if (numericKeys.has(key)) {
       const number = Number(raw);
       if (!Number.isFinite(number))
         throw new Error("Invalid numeric operation");
-      const property: Record<string, string> = {
-        w: "width",
-        h: "height",
-        l: "left",
-        t: "top",
-        cw: "width",
-        ch: "height",
-        rot: "angle",
-        sharp: "sigma",
-        q: "quality",
-      };
-      group[property[key] ?? key] = number;
-    } else if (key === "fit") group.fit = raw;
+      group[properties[key] ?? key] = number;
+    } else if (key === "fit" || key === "strategy") group[key] = raw;
     else if (key === "f") group.format = raw;
-    else if (key === "gray") {
-      if (raw !== "1") throw new Error("Invalid grayscale operation");
+    else if (key === "gray" || key === "flip" || key === "flop") {
+      if (raw !== "1") throw new Error(`Invalid ${key} operation`);
     } else if (key === "wm") group.text = raw;
     else if (key === "grav") group.gravity = raw;
+    else if (key === "pos") group.position = raw;
+    else if (key === "tint") group.color = raw;
+    else if (key === "contrast") group.contrast = Number(raw);
     else if (key === "blur") group.sigma = Number(raw);
   }
   const operationObjects = sequence.map((category) => ({
     op: category,
     ...groups.get(category),
   }));
+  if (operationObjects.length > maxOperations)
+    throw new Error("OPS_CHAIN_TOO_LONG");
   const result = operationsSchema.safeParse(operationObjects);
-  if (!result.success) throw new Error("Invalid URL operations");
+  if (!result.success)
+    throw new Error(
+      result.error.issues[0]?.message ?? "Invalid URL operations",
+    );
   return result.data;
 }
