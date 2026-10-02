@@ -5,6 +5,7 @@ export function createCacheKey(
   source: string | URL,
   ops: readonly Operation[],
   outputFormat = getOutputFormat(ops),
+  sourceScope = "",
 ): string {
   const sourceUrl = new URL(source);
   sourceUrl.hash = "";
@@ -28,6 +29,7 @@ export function createCacheKey(
   const canonicalOps = JSON.stringify(sortObjectKeys(normalizedOps));
   const input = JSON.stringify({
     source: canonicalSource,
+    sourceScope,
     ops: canonicalOps,
     outputFormat,
   });

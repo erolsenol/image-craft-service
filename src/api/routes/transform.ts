@@ -19,6 +19,7 @@ import { operationsSchema, type Operation } from "../schemas/operations.js";
 import { SingleFlight } from "../../core/single-flight.js";
 import type { ServiceMetrics } from "../../observability/metrics.js";
 import { withSpan } from "../../observability/tracing.js";
+import { resolveImageSource } from "../../security/sources.js";
 
 const jsonOpsSchema = z.object({ ops: operationsSchema });
 export async function transformRoutes(
@@ -222,7 +223,11 @@ export async function transformRoutes(
               description:
                 "Comma-separated operations; supports f_auto Accept negotiation, smart/focal crop, padding, effects, watermarks, and rounded corners",
             },
-            "*": { type: "string", description: "Remote image URL" },
+            "*": {
+              type: "string",
+              description:
+                "Remote HTTP(S) image URL or configured source alias path such as cdn:products/photo.jpg",
+            },
           },
         },
         querystring: {
@@ -287,15 +292,15 @@ export async function transformRoutes(
       } catch {
         throw new AppError("Invalid remote URL", 400);
       }
-      let source: URL;
+      let signatureSource: URL;
       try {
-        source = new URL(url);
+        signatureSource = new URL(url);
       } catch {
         throw new AppError("Invalid remote URL", 400);
       }
       if (
         !verifyTransformSignature(
-          source,
+          signatureSource,
           request.params.ops,
           request.query.expires,
           request.query.sig,
@@ -303,6 +308,21 @@ export async function transformRoutes(
         )
       )
         return reply.code(403).send({ error: "Invalid signature" });
+      let remoteSource: ReturnType<typeof resolveImageSource>;
+      try {
+        remoteSource = resolveImageSource(
+          url,
+          config.NAMED_SOURCES,
+          config.ALLOWED_HOSTS.split(",")
+            .map((host) => host.trim().toLowerCase())
+            .filter(Boolean),
+        );
+      } catch (error) {
+        if (error instanceof AppError)
+          return reply.code(error.statusCode).send({ error: error.message });
+        throw error;
+      }
+      const source = remoteSource.url;
       let parsedOps: Operation[];
       try {
         parsedOps = parseCompactOps(request.params.ops, config.MAX_OPS_CHAIN);
@@ -327,7 +347,12 @@ export async function transformRoutes(
         parsedOps,
         request.headers.accept,
       );
-      const key = createCacheKey(source, parsedOps, outputFormat);
+      const key = createCacheKey(
+        source,
+        parsedOps,
+        outputFormat,
+        remoteSource.cacheScope,
+      );
       reply.header(
         "Cache-Control",
         `public, max-age=${config.CACHE_MAX_AGE_SECONDS}`,
@@ -350,11 +375,15 @@ export async function transformRoutes(
             { "server.address": source.hostname },
             () =>
               fetchImage(source.toString(), {
-                allowedHosts: config.ALLOWED_HOSTS.split(",")
-                  .map((host) => host.trim().toLowerCase())
-                  .filter(Boolean),
+                allowedHosts: remoteSource.allowedHosts,
                 timeoutMs: config.REQUEST_TIMEOUT_MS,
                 maxBytes: config.MAX_UPLOAD_BYTES,
+                ...(remoteSource.headers
+                  ? { headers: remoteSource.headers }
+                  : {}),
+                ...(remoteSource.credentialOrigin
+                  ? { credentialOrigin: remoteSource.credentialOrigin }
+                  : {}),
               }),
           );
           const result = await withSpan(
@@ -434,18 +463,28 @@ export async function transformRoutes(
       },
     },
     async (request) => {
-      let source: URL;
+      let resolvedSource: ReturnType<typeof resolveImageSource>;
       try {
-        source = new URL(decodeURIComponent(request.params["*"]));
+        const input = decodeURIComponent(request.params["*"]);
+        resolvedSource = resolveImageSource(
+          input,
+          config.NAMED_SOURCES,
+          config.ALLOWED_HOSTS.split(",")
+            .map((host) => host.trim().toLowerCase())
+            .filter(Boolean),
+        );
       } catch {
         throw new AppError("Invalid remote URL", 400);
       }
+      const source = resolvedSource.url;
       const remote = await fetchImage(source.toString(), {
-        allowedHosts: config.ALLOWED_HOSTS.split(",")
-          .map((host) => host.trim().toLowerCase())
-          .filter(Boolean),
+        allowedHosts: resolvedSource.allowedHosts,
         timeoutMs: config.REQUEST_TIMEOUT_MS,
         maxBytes: config.MAX_UPLOAD_BYTES,
+        ...(resolvedSource.headers ? { headers: resolvedSource.headers } : {}),
+        ...(resolvedSource.credentialOrigin
+          ? { credentialOrigin: resolvedSource.credentialOrigin }
+          : {}),
       });
       const makeHash = async () => {
         await validateImage(remote.body, config.MAX_INPUT_PIXELS);

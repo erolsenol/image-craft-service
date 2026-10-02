@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here.
 
+## [0.7.0] - 2026-10-03
+
+### Added
+
+- Pluggable S3-compatible storage for transform cache and batch upload/output objects, supporting AWS credential chains and custom S3 endpoints for R2 and MinIO.
+- Presigned S3 uploads through JSON `POST /v1/uploads` when the S3 storage adapter is enabled.
+- Named remote source aliases with per-source hostname allowlists, credential headers, redirect credential isolation, and path traversal checks.
+- MinIO integration coverage, Compose test profile, Kubernetes manifest, Helm chart skeleton, and Fly.io/Railway deployment recipes.
+
 ## [0.6.0] - 2026-10-02
 
 ### Added

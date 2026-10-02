@@ -2,8 +2,7 @@ FROM node:20-bookworm-slim AS build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
-COPY tsconfig.json tsconfig.build.json eslint.config.js ./
-COPY src ./src
+COPY . .
 RUN npm run build
 
 FROM node:20-bookworm-slim AS runtime

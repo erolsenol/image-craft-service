@@ -10,5 +10,6 @@ export interface Storage {
   set(key: string, value: Buffer, ttlSeconds: number): Promise<void>;
   delete(key: string): Promise<void>;
   stats(): Promise<StorageStats>;
+  close?(): Promise<void>;
 }
 import type { Readable } from "node:stream";

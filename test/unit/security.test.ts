@@ -96,6 +96,43 @@ describe("SSRF DNS and redirect checks", () => {
     expect(resolutions).toBe(2);
     expect(requested).toEqual(["rebound.example"]);
   });
+
+  it("does not forward named-source credentials to redirected hosts", async () => {
+    const forwardedHeaders: (Readonly<Record<string, string>> | undefined)[] =
+      [];
+    const response = await fetchRemoteImage(
+      "https://cdn.example.com/image.png",
+      {
+        allowedHosts: ["cdn.example.com", "images.example.com"],
+        credentialOrigin: "https://cdn.example.com",
+        headers: { authorization: "Bearer private" },
+        timeoutMs: 1000,
+        maxBytes: 1000,
+      },
+      {
+        resolveAddresses: async () => ["8.8.8.8"],
+        requestPinned: async (url, _address, _timeout, _bytes, headers) => {
+          forwardedHeaders.push(headers);
+          return url.hostname === "cdn.example.com"
+            ? {
+                statusCode: 302,
+                headers: { location: "https://images.example.com/final.png" },
+                body: Buffer.alloc(0),
+              }
+            : {
+                statusCode: 200,
+                headers: { "content-type": "image/png" },
+                body: Buffer.from("image"),
+              };
+        },
+      },
+    );
+    expect(response.body).toEqual(Buffer.from("image"));
+    expect(forwardedHeaders).toEqual([
+      { authorization: "Bearer private" },
+      undefined,
+    ]);
+  });
 });
 
 describe("signed URLs", () => {

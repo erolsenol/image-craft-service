@@ -7,8 +7,8 @@ import swaggerUi from "@fastify/swagger-ui";
 import type { AppConfig } from "../config/index.js";
 import { healthRoutes } from "./routes/health.js";
 import { transformRoutes } from "./routes/transform.js";
-import { DiskStorage } from "../storage/disk-storage.js";
 import type { Storage } from "../storage/storage.js";
+import { createStorage } from "../storage/create-storage.js";
 import { AppError } from "../core/errors.js";
 import type { FastifyRequest } from "fastify";
 import { batchRoutes } from "./routes/batch.js";
@@ -20,6 +20,7 @@ import { ConcurrencyLimiter } from "../security/concurrency.js";
 import { fetchRemoteImage } from "../security/ssrf.js";
 import { authenticateApiKey, requiredApiScope } from "../security/api-keys.js";
 import { ServiceMetrics } from "../observability/metrics.js";
+import { supportsPresignedUploads } from "../storage/presigned-upload-storage.js";
 
 export interface AppDependencies {
   remoteImageFetcher?: typeof fetchRemoteImage;
@@ -53,8 +54,7 @@ export async function createApp(
   });
   const metrics = new ServiceMetrics();
   metrics.attach(app);
-  const activeStorage =
-    storage ?? new DiskStorage(config.CACHE_DIR, config.CACHE_MAX_SIZE_BYTES);
+  const activeStorage = storage ?? createStorage(config);
   const activePlugins = plugins ?? createPluginRegistry(config);
   const processingLimiter = new ConcurrencyLimiter(
     config.IMAGE_PROCESSING_CONCURRENCY,
@@ -238,6 +238,32 @@ export async function createApp(
                 properties: { file: { type: "string", format: "binary" } },
               },
             },
+            ...(supportsPresignedUploads(activeStorage)
+              ? {
+                  "application/json": {
+                    schema: {
+                      type: "object",
+                      required: ["contentType", "sizeBytes"],
+                      properties: {
+                        contentType: {
+                          type: "string",
+                          enum: [
+                            "image/jpeg",
+                            "image/png",
+                            "image/webp",
+                            "image/avif",
+                          ],
+                        },
+                        sizeBytes: {
+                          type: "integer",
+                          minimum: 1,
+                          maximum: config.MAX_UPLOAD_BYTES,
+                        },
+                      },
+                    },
+                  },
+                }
+              : {}),
           },
         };
       }
@@ -246,7 +272,7 @@ export async function createApp(
     openapi: {
       info: {
         title: "Image Craft Service",
-        version: "0.6.0",
+        version: "0.7.0",
         description: "Self-hosted image processing HTTP API",
       },
       servers: [{ url: "/" }],
@@ -306,6 +332,9 @@ export async function createApp(
     storage: activeStorage,
     ...(activeQueue ? { queue: activeQueue } : {}),
   });
-  if (activeQueue) app.addHook("onClose", () => activeQueue.close());
+  app.addHook("onClose", async () => {
+    await activeQueue?.close();
+    await activeStorage.close?.();
+  });
   return app;
 }

@@ -21,6 +21,10 @@ jobs:
           --health-retries 10
     env:
       REDIS_TEST_URL: redis://127.0.0.1:6379
+      S3_TEST_ENDPOINT: http://127.0.0.1:9000
+      S3_TEST_REGION: us-east-1
+      S3_TEST_ACCESS_KEY: minioadmin
+      S3_TEST_SECRET_KEY: minioadmin
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -28,6 +32,7 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - run: docker run --detach --rm --name image-craft-minio --publish 9000:9000 --env MINIO_ROOT_USER=minioadmin --env MINIO_ROOT_PASSWORD=minioadmin minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
       - run: npm audit --audit-level=high
       - run: npm run lint
       - run: npm run typecheck

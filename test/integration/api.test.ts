@@ -34,10 +34,19 @@ const testConfig: AppConfig = {
   MAX_OPS_CHAIN: 20,
   API_KEYS: "",
   ALLOWED_HOSTS: "",
+  NAMED_SOURCES: {},
   SIGNING_SECRET: undefined,
+  STORAGE_DRIVER: "disk",
   CACHE_DIR: "/tmp/image-craft-test-cache",
   CACHE_MAX_AGE_SECONDS: 60,
   CACHE_MAX_SIZE_BYTES: 1024 * 1024,
+  S3_ENDPOINT: undefined,
+  S3_REGION: "us-east-1",
+  S3_BUCKET: undefined,
+  S3_ACCESS_KEY_ID: undefined,
+  S3_SECRET_ACCESS_KEY: undefined,
+  S3_FORCE_PATH_STYLE: true,
+  S3_PRESIGNED_UPLOAD_TTL_SECONDS: 900,
   QUEUE_ENABLED: false,
   REDIS_URL: "redis://127.0.0.1:6379",
   BATCH_MAX_ITEMS: 100,
@@ -160,6 +169,27 @@ class MemoryStorage implements Storage {
   }
 }
 
+class PresignedMemoryStorage extends MemoryStorage {
+  async createPresignedUpload(
+    key: string,
+    contentType: string,
+    contentLength: number,
+    uploadExpiresInSeconds: number,
+    objectTtlSeconds: number,
+  ) {
+    await this.set(
+      `presigned:${key}`,
+      Buffer.from(`${contentType}:${contentLength}`),
+      objectTtlSeconds,
+    );
+    return {
+      url: `https://storage.example/${encodeURIComponent(key)}`,
+      headers: { "Content-Type": contentType },
+      expiresIn: uploadExpiresInSeconds,
+    };
+  }
+}
+
 describe("HTTP API", () => {
   const storage = new MemoryStorage();
   const app = createApp(
@@ -210,7 +240,7 @@ describe("HTTP API", () => {
     ).toBe("binary");
     expect(docs.json().paths).toHaveProperty("/v1/hash/{*}");
     expect(docs.json().paths).toHaveProperty("/metrics");
-    expect(docs.json().info.version).toBe("0.6.0");
+    expect(docs.json().info.version).toBe("0.7.0");
     expect(docs.json().paths["/v1/img/{ops}/{*}"]?.get?.parameters).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "sig", in: "query" }),
@@ -514,6 +544,78 @@ describe("HTTP API", () => {
     expect(
       batchStorage.values.get(`batch-upload-owner:${response.json().fileId}`),
     ).toBeDefined();
+    await server.close();
+  });
+
+  it("returns presigned upload details when the storage adapter supports them", async () => {
+    const storage = new PresignedMemoryStorage();
+    const server = await createApp(
+      { ...testConfig, QUEUE_ENABLED: true },
+      storage,
+      new MemoryBatchQueue(),
+    );
+    await server.ready();
+    const response = await server.inject({
+      method: "POST",
+      url: "/v1/uploads",
+      headers: { "content-type": "application/json" },
+      payload: { contentType: "image/png", sizeBytes: image.byteLength },
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      uploadUrl: expect.stringContaining("storage.example"),
+      method: "PUT",
+      expiresIn: testConfig.S3_PRESIGNED_UPLOAD_TTL_SECONDS,
+      headers: { "Content-Type": "image/png" },
+    });
+    expect(
+      storage.values
+        .get(`batch-upload-owner:${response.json().fileId}`)
+        ?.toString(),
+    ).toBeDefined();
+    const docs = await server.inject("/docs/json");
+    expect(
+      docs.json().paths["/v1/uploads"]?.post?.requestBody?.content,
+    ).toHaveProperty("application/json");
+    await server.close();
+  });
+
+  it("resolves named image source aliases and forwards credentials only through the configured source", async () => {
+    let fetchedUrl = "";
+    let fetchedOptions: Parameters<typeof fetch>[1] | undefined;
+    const server = await createApp(
+      {
+        ...testConfig,
+        NAMED_SOURCES: {
+          cdn: {
+            origin: "https://cdn.example.com/assets/",
+            allowedHosts: ["cdn.example.com"],
+            headers: { authorization: "Bearer named-source-token" },
+          },
+        },
+      },
+      new MemoryStorage(),
+      undefined,
+      undefined,
+      {
+        remoteImageFetcher: async (url, options) => {
+          fetchedUrl = url;
+          fetchedOptions = options as unknown as Parameters<typeof fetch>[1];
+          return { body: image, contentType: "image/jpeg" };
+        },
+      },
+    );
+    await server.ready();
+    const response = await server.inject("/v1/img/w_4/cdn:products/photo.jpg");
+    expect(response.statusCode).toBe(200);
+    expect(fetchedUrl).toBe(
+      "https://cdn.example.com/assets/products/photo.jpg",
+    );
+    expect(fetchedOptions).toMatchObject({
+      allowedHosts: ["cdn.example.com"],
+      headers: { authorization: "Bearer named-source-token" },
+      credentialOrigin: "https://cdn.example.com",
+    });
     await server.close();
   });
 

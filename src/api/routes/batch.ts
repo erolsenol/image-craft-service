@@ -9,6 +9,12 @@ import { assertPublicWebhookUrl } from "../../security/webhook.js";
 import { resolveBatchClientId } from "../../security/api-keys.js";
 import { validateImage } from "../../security/limits.js";
 import { operationsSchema } from "../schemas/operations.js";
+import { supportsPresignedUploads } from "../../storage/presigned-upload-storage.js";
+
+const presignedUploadRequestSchema = z.object({
+  contentType: z.enum(["image/jpeg", "image/png", "image/webp", "image/avif"]),
+  sizeBytes: z.number().int().positive(),
+});
 
 const fileIdPattern =
   /^file_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -65,7 +71,7 @@ export async function batchRoutes(
     "/v1/uploads",
     {
       schema: {
-        consumes: ["multipart/form-data"],
+        consumes: ["multipart/form-data", "application/json"],
         response: {
           201: {
             type: "object",
@@ -73,11 +79,15 @@ export async function batchRoutes(
             properties: {
               fileId: { type: "string" },
               expiresIn: { type: "integer" },
+              uploadUrl: { type: "string", format: "uri" },
+              method: { type: "string", enum: ["PUT"] },
+              headers: { type: "object", additionalProperties: true },
             },
           },
           400: { type: "object", properties: { error: { type: "string" } } },
           401: { type: "object", properties: { error: { type: "string" } } },
           503: { type: "object", properties: { error: { type: "string" } } },
+          415: { type: "object", properties: { error: { type: "string" } } },
         },
       },
     },
@@ -92,6 +102,41 @@ export async function batchRoutes(
         config.API_KEYS,
       );
       if (!clientId) return reply.code(401).send({ error: "Invalid API key" });
+      if (!request.isMultipart()) {
+        if (!supportsPresignedUploads(storage))
+          return reply.code(415).send({
+            error: "Presigned uploads require S3-compatible storage",
+            code: "PRESIGNED_UPLOADS_UNAVAILABLE",
+          });
+        const parsed = presignedUploadRequestSchema.safeParse(request.body);
+        if (!parsed.success || parsed.data.sizeBytes > config.MAX_UPLOAD_BYTES)
+          return reply.code(400).send({
+            error:
+              "contentType and a sizeBytes within MAX_UPLOAD_BYTES are required",
+            code: "INVALID_UPLOAD_REQUEST",
+          });
+        const fileId = `file_${randomUUID()}`;
+        const storageKey = `batch-upload:${fileId}`;
+        await storage.set(
+          `batch-upload-owner:${fileId}`,
+          Buffer.from(clientId),
+          config.BATCH_RESULT_TTL_SECONDS,
+        );
+        const presigned = await storage.createPresignedUpload(
+          storageKey,
+          parsed.data.contentType,
+          parsed.data.sizeBytes,
+          config.S3_PRESIGNED_UPLOAD_TTL_SECONDS,
+          config.BATCH_RESULT_TTL_SECONDS,
+        );
+        return reply.code(201).send({
+          fileId,
+          uploadUrl: presigned.url,
+          method: "PUT",
+          headers: presigned.headers,
+          expiresIn: presigned.expiresIn,
+        });
+      }
       const parts = request.parts({
         limits: { fileSize: config.MAX_UPLOAD_BYTES, files: 1, fields: 0 },
       });

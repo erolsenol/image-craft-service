@@ -93,4 +93,89 @@ describe("security-related configuration bounds", () => {
       }).success,
     ).toBe(false);
   });
+
+  it("validates S3 storage settings and credential pairs", () => {
+    expect(envSchema.safeParse({ STORAGE_DRIVER: "s3" }).success).toBe(false);
+    expect(
+      envSchema.safeParse({
+        STORAGE_DRIVER: "s3",
+        S3_BUCKET: "image-cache",
+        S3_ENDPOINT: "http://minio:9000",
+        S3_ACCESS_KEY_ID: "local-access",
+      }).success,
+    ).toBe(false);
+    expect(
+      envSchema.safeParse({
+        STORAGE_DRIVER: "s3",
+        S3_BUCKET: "image-cache",
+        S3_ENDPOINT: "http://user:secret@minio:9000",
+      }).success,
+    ).toBe(false);
+    expect(
+      envSchema.safeParse({
+        STORAGE_DRIVER: "s3",
+        S3_BUCKET: "image-cache",
+        S3_ENDPOINT: "http://minio:9000",
+        S3_ACCESS_KEY_ID: "local-access",
+        S3_SECRET_ACCESS_KEY: "local-secret",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("validates named source host allowlists and credential headers", () => {
+    const valid = JSON.stringify({
+      cdn: {
+        origin: "https://cdn.example.com/assets/",
+        allowedHosts: ["cdn.example.com"],
+        headers: { authorization: "Bearer sample" },
+      },
+    });
+    expect(envSchema.safeParse({ NAMED_SOURCES: valid }).success).toBe(true);
+    expect(
+      envSchema.safeParse({
+        NAMED_SOURCES: JSON.stringify({
+          cdn: {
+            origin: "https://cdn.example.com",
+            allowedHosts: ["other.example.com"],
+          },
+        }),
+      }).success,
+    ).toBe(false);
+    expect(
+      envSchema.safeParse({
+        NAMED_SOURCES: JSON.stringify({
+          cdn: {
+            origin: "https://cdn.example.com",
+            allowedHosts: ["cdn.example.com"],
+            headers: { host: "attacker.example" },
+          },
+        }),
+      }).success,
+    ).toBe(false);
+    expect(envSchema.safeParse({ NAMED_SOURCES: "not-json" }).success).toBe(
+      false,
+    );
+    expect(
+      envSchema.safeParse({
+        NAMED_SOURCES: JSON.stringify({
+          cdn: {
+            origin: "https://cdn.example.com/assets/?token=x",
+            allowedHosts: ["cdn.example.com"],
+          },
+        }),
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts blank optional S3 values used by the Compose environment", () => {
+    expect(
+      envSchema.safeParse({
+        S3_ENDPOINT: "",
+        S3_BUCKET: "",
+        S3_ACCESS_KEY_ID: "",
+        S3_SECRET_ACCESS_KEY: "",
+        NAMED_SOURCES: "",
+      }).success,
+    ).toBe(true);
+  });
 });

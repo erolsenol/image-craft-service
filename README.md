@@ -9,7 +9,7 @@
 - Resize, smart and focal-point crop, padding, rotate, flip/flop, tint, color adjustments, watermarks, rounded corners, blur, sharpen, grayscale, and convert to JPEG, PNG, WebP, or AVIF.
 - Accept-based auto format selection (AVIF, then WebP, then source format) and BlurHash previews.
 - Transform uploaded images or public remote URLs; strip metadata from output.
-- Disk cache with TTL, size-bounded LRU eviction, request coalescing, and `X-Cache` / ETag headers.
+- Disk cache with TTL, size-bounded LRU eviction, request coalescing, and `X-Cache` / ETag headers; optional S3-compatible storage for cache, uploads, and batch outputs.
 - Optional Redis-backed batch jobs with streamed ZIP downloads, per-item errors, retries, and per-client limits.
 - SSRF defenses, signed URLs, input and output limits, and bounded processing concurrency.
 - SHA-256 API key digests with optional route scopes, per-key request limits, exact-origin CORS, and browser security headers.
@@ -17,6 +17,7 @@
 - Optional rembg background removal plugin.
 - Prometheus metrics for HTTP traffic, operation latency, cache, queue, in-flight transforms, and errors; optional OpenTelemetry traces.
 - Provisioned Grafana dashboard and a Compose `monitoring` profile.
+- Named, allowlisted source aliases with per-source credentials and S3-presigned upload URLs.
 
 ## Before and after
 
@@ -136,7 +137,53 @@ curl -H 'X-API-Key: your-configured-key' http://localhost:3000/v1/jobs/<job-id>
 curl -L -H 'X-API-Key: your-configured-key' http://localhost:3000/v1/jobs/<job-id>/download -o results.zip
 ```
 
-The default maximum is 100 sources per job. The worker processes items sequentially and persists each transformed result to disk; ZIP downloads pipe those files to the response, so image and archive contents are not accumulated in memory. Set `API_KEYS` to comma-separated client keys to enable key authentication and per-key quotas. Configure `BATCH_CONCURRENCY_PER_API_KEY`, `BATCH_RATE_LIMIT_PER_API_KEY`, and `BATCH_RATE_WINDOW_MS` for admission limits. Job data and result files expire according to `BATCH_RESULT_TTL_SECONDS`.
+The default maximum is 100 sources per job. The worker processes items sequentially and persists each transformed result through the configured storage adapter; ZIP downloads stream those files to the response, so image and archive contents are not accumulated in memory. Set `API_KEYS` to comma-separated client keys to enable key authentication and per-key quotas. Configure `BATCH_CONCURRENCY_PER_API_KEY`, `BATCH_RATE_LIMIT_PER_API_KEY`, and `BATCH_RATE_WINDOW_MS` for admission limits. Job data and result files expire according to `BATCH_RESULT_TTL_SECONDS`.
+
+### S3-compatible storage and presigned uploads
+
+Set `STORAGE_DRIVER=s3` and configure an AWS S3, Cloudflare R2, or MinIO bucket. This single setting switches the cache, uploaded batch inputs, and batch outputs from disk to the configured object store. AWS deployments can use the SDK credential chain (for example, an IAM role); use `S3_ENDPOINT`, bucket credentials, and `S3_FORCE_PATH_STYLE=true` for R2 or MinIO. For R2, use its account endpoint and `S3_REGION=auto`.
+
+```env
+STORAGE_DRIVER=s3
+S3_ENDPOINT=http://minio:9000
+S3_REGION=us-east-1
+S3_BUCKET=image-craft
+S3_ACCESS_KEY_ID=minioadmin
+S3_SECRET_ACCESS_KEY=replace-with-secret
+S3_FORCE_PATH_STYLE=true
+```
+
+The disk multipart upload route stays available. With S3 selected and `QUEUE_ENABLED=true`, `POST /v1/uploads` also accepts JSON and returns a presigned `PUT` URL. Put the file with the returned headers, then pass the returned `fileId` to `/v1/batch`:
+
+```sh
+upload=$(curl -sS -X POST http://localhost:3000/v1/uploads \
+  -H 'Content-Type: application/json' -H 'X-API-Key: your-key' \
+  -d '{"contentType":"image/png","sizeBytes":12345}')
+upload_url=$(printf '%s' "$upload" | jq -r .uploadUrl)
+expires_at=$(printf '%s' "$upload" | jq -r '.headers["x-amz-meta-expiresat"]')
+file_id=$(printf '%s' "$upload" | jq -r .fileId)
+curl -X PUT "$upload_url" -H 'Content-Type: image/png' \
+  -H "x-amz-meta-expiresat: $expires_at" --upload-file photo.png
+curl -X POST http://localhost:3000/v1/batch \
+  -H 'Content-Type: application/json' -H 'X-API-Key: your-key' \
+  -d "{\"sources\":[\"$file_id\"],\"ops\":[{\"op\":\"resize\",\"width\":400}]}"
+```
+
+The client must be permitted by the bucket's CORS policy when uploading from a browser. S3 TTL expiry is enforced when an object is read. Add bucket lifecycle rules with retention at least as long as your maximum cache and job TTL to remove expired objects according to the provider's lifecycle schedule. The disk adapter enforces `CACHE_MAX_SIZE_BYTES`; S3 capacity is managed by the bucket and lifecycle policy.
+
+Remote source aliases are configured as JSON in `NAMED_SOURCES`. Each alias requires an HTTP(S) `origin` and an `allowedHosts` list that includes the origin hostname. Optional `headers` can contain only `authorization`, `x-api-key`, or `x-access-token`; values are sent only to the configured origin and never forwarded to a different redirect origin.
+
+```env
+NAMED_SOURCES={"cdn":{"origin":"https://cdn.example.com/assets/","allowedHosts":["cdn.example.com"],"headers":{"authorization":"Bearer source-token"}}}
+```
+
+Use the alias in a transform URL: `/v1/img/w_400,f_webp/cdn:products/photo.jpg`. Alias paths cannot traverse above the configured origin path and still pass through the service's public-IP and redirect checks.
+
+Run the MinIO-backed adapter tests locally with Docker Compose:
+
+```sh
+docker compose --profile s3-test run --rm s3-integration
+```
 
 Set `WEBHOOK_SIGNING_SECRET` (at least 32 characters) and pass `webhookUrl` when submitting a job to receive a completion callback. The service signs `timestamp + "." + raw JSON body` with HMAC-SHA256 in `X-Image-Craft-Timestamp` and `X-Image-Craft-Signature` headers. Callback hosts must resolve to public IPs; redirects are rejected.
 
@@ -160,35 +207,42 @@ curl 'http://localhost:3000/v1/hash/https://example.com/photo.jpg'
 
 All settings are environment variables validated at startup. See [.env.example](.env.example) for the full list.
 
-| Variable                                        | Default                            | Purpose                                                          |
-| ----------------------------------------------- | ---------------------------------- | ---------------------------------------------------------------- |
-| `MAX_UPLOAD_BYTES`                              | `20971520`                         | Maximum input size in bytes                                      |
-| `MAX_INPUT_PIXELS`                              | `40000000`                         | Decompression-bomb pixel limit                                   |
-| `MAX_OUTPUT_DIMENSION`                          | `4096`                             | Maximum output width or height                                   |
-| `CONCURRENCY_LIMIT`                             | `8`                                | Maximum simultaneous requests                                    |
-| `REMOTE_TRANSFORM_RATE_LIMIT`                   | `60`                               | Remote transforms allowed per IP per window                      |
-| `REMOTE_TRANSFORM_RATE_WINDOW_MS`               | `60000`                            | Remote transform rate-limit window in milliseconds               |
-| `IMAGE_PROCESSING_CONCURRENCY`                  | `2`                                | Concurrent image and plugin operations                           |
-| `MAX_OPS_CHAIN`                                 | `20`                               | Maximum operations accepted in one transform chain               |
-| `ALLOWED_HOSTS`                                 | unset                              | Optional comma-separated remote host allowlist                   |
-| `SIGNING_SECRET`                                | unset                              | Require signed remote transform URLs                             |
-| `CACHE_MAX_SIZE_BYTES`                          | `536870912`                        | Maximum disk cache size                                          |
-| `QUEUE_ENABLED` / `REDIS_URL`                   | `false` / `redis://127.0.0.1:6379` | Enable Redis-backed batch jobs                                   |
-| `API_KEYS`                                      | unset                              | Semicolon-separated SHA-256 digests with optional `=scope+scope` |
-| `API_RATE_LIMIT` / `API_RATE_WINDOW_MS`         | `120` / `60000`                    | API requests allowed per client key in the time window           |
-| `CORS_ORIGINS`                                  | unset                              | Comma-separated exact browser origins; wildcard is rejected      |
-| `BATCH_MAX_ITEMS`                               | `100`                              | Maximum sources in one batch                                     |
-| `BATCH_CONCURRENCY_PER_API_KEY`                 | `2`                                | Active queued jobs per client key                                |
-| `BATCH_RATE_LIMIT_PER_API_KEY`                  | `10`                               | Jobs admitted per client within the rate window                  |
-| `BATCH_RATE_WINDOW_MS`                          | `60000`                            | Per-key job rate window                                          |
-| `BATCH_JOB_ATTEMPTS` / `BATCH_BACKOFF_DELAY_MS` | `3` / `1000`                       | Retry count and exponential backoff base                         |
-| `BATCH_RESULT_TTL_SECONDS`                      | `86400`                            | Job and output retention period                                  |
-| `WEBHOOK_SIGNING_SECRET`                        | unset                              | HMAC key for optional completion webhooks                        |
-| `REMOVE_BACKGROUND_ENABLED`                     | `false`                            | Enable the optional rembg plugin                                 |
-| `OTEL_ENABLED`                                  | `false`                            | Enable OpenTelemetry tracing and Fastify request spans           |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`                   | `http://localhost:4318`            | OTLP/HTTP collector base URL; traces are sent to `/v1/traces`    |
-| `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` | `admin` / local-only placeholder   | Local dashboard login for Compose monitoring profile             |
-| `PROMETHEUS_PORT` / `GRAFANA_PORT`              | `9090` / `3001`                    | Loopback ports for local monitoring services                     |
+| Variable                                        | Default                            | Purpose                                                            |
+| ----------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------ |
+| `MAX_UPLOAD_BYTES`                              | `20971520`                         | Maximum input size in bytes                                        |
+| `MAX_INPUT_PIXELS`                              | `40000000`                         | Decompression-bomb pixel limit                                     |
+| `MAX_OUTPUT_DIMENSION`                          | `4096`                             | Maximum output width or height                                     |
+| `CONCURRENCY_LIMIT`                             | `8`                                | Maximum simultaneous requests                                      |
+| `REMOTE_TRANSFORM_RATE_LIMIT`                   | `60`                               | Remote transforms allowed per IP per window                        |
+| `REMOTE_TRANSFORM_RATE_WINDOW_MS`               | `60000`                            | Remote transform rate-limit window in milliseconds                 |
+| `IMAGE_PROCESSING_CONCURRENCY`                  | `2`                                | Concurrent image and plugin operations                             |
+| `MAX_OPS_CHAIN`                                 | `20`                               | Maximum operations accepted in one transform chain                 |
+| `ALLOWED_HOSTS`                                 | unset                              | Optional comma-separated remote host allowlist                     |
+| `SIGNING_SECRET`                                | unset                              | Require signed remote transform URLs                               |
+| `CACHE_MAX_SIZE_BYTES`                          | `536870912`                        | Maximum disk cache size                                            |
+| `STORAGE_DRIVER`                                | `disk`                             | `disk` or S3-compatible `s3` for cache and batch object storage    |
+| `S3_ENDPOINT` / `S3_REGION`                     | unset / `us-east-1`                | S3 API endpoint and signing region (`auto` for Cloudflare R2)      |
+| `S3_BUCKET`                                     | unset                              | Bucket used when `STORAGE_DRIVER=s3`                               |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY`     | unset                              | Optional static credentials; AWS may use its role credential chain |
+| `S3_FORCE_PATH_STYLE`                           | `true`                             | Use path-style addressing for R2 and MinIO                         |
+| `S3_PRESIGNED_UPLOAD_TTL_SECONDS`               | `900`                              | Lifetime of returned upload URLs, maximum one hour                 |
+| `NAMED_SOURCES`                                 | empty                              | JSON map of source aliases, origin allowlists, and credentials     |
+| `QUEUE_ENABLED` / `REDIS_URL`                   | `false` / `redis://127.0.0.1:6379` | Enable Redis-backed batch jobs                                     |
+| `API_KEYS`                                      | unset                              | Semicolon-separated SHA-256 digests with optional `=scope+scope`   |
+| `API_RATE_LIMIT` / `API_RATE_WINDOW_MS`         | `120` / `60000`                    | API requests allowed per client key in the time window             |
+| `CORS_ORIGINS`                                  | unset                              | Comma-separated exact browser origins; wildcard is rejected        |
+| `BATCH_MAX_ITEMS`                               | `100`                              | Maximum sources in one batch                                       |
+| `BATCH_CONCURRENCY_PER_API_KEY`                 | `2`                                | Active queued jobs per client key                                  |
+| `BATCH_RATE_LIMIT_PER_API_KEY`                  | `10`                               | Jobs admitted per client within the rate window                    |
+| `BATCH_RATE_WINDOW_MS`                          | `60000`                            | Per-key job rate window                                            |
+| `BATCH_JOB_ATTEMPTS` / `BATCH_BACKOFF_DELAY_MS` | `3` / `1000`                       | Retry count and exponential backoff base                           |
+| `BATCH_RESULT_TTL_SECONDS`                      | `86400`                            | Job and output retention period                                    |
+| `WEBHOOK_SIGNING_SECRET`                        | unset                              | HMAC key for optional completion webhooks                          |
+| `REMOVE_BACKGROUND_ENABLED`                     | `false`                            | Enable the optional rembg plugin                                   |
+| `OTEL_ENABLED`                                  | `false`                            | Enable OpenTelemetry tracing and Fastify request spans             |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`                   | `http://localhost:4318`            | OTLP/HTTP collector base URL; traces are sent to `/v1/traces`      |
+| `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` | `admin` / local-only placeholder   | Local dashboard login for Compose monitoring profile               |
+| `PROMETHEUS_PORT` / `GRAFANA_PORT`              | `9090` / `3001`                    | Loopback ports for local monitoring services                       |
 
 ## Observability
 
@@ -220,9 +274,12 @@ node -e 'console.log(require("node:crypto").createHash("sha256").update(process.
 
 Set `CORS_ORIGINS` to exact origins such as `https://app.example.com`; requests from other browser origins are rejected. Uploads are checked by file signature and bounded by byte and total decoded-pixel limits. SVG input is not accepted, and image watermark overlays require raster PNG. Keep the service behind TLS and trusted access controls; use `SIGNING_SECRET` when clients can request remote transforms. See [SECURITY.md](SECURITY.md) and the [v0.5.0 security audit](docs/security-audit.md).
 
+## Deployment recipes
+
+See [docs/deployment.md](docs/deployment.md) for Docker, Kubernetes/Helm, Fly.io, and Railway recipes. Use object storage for persistent cache and batch files on platforms where local filesystems are ephemeral.
+
 ## Roadmap
 
-- S3-compatible storage adapter
 - Richer identity providers and quota policies
 - More formats and animation controls
 - Reproducible published benchmarks

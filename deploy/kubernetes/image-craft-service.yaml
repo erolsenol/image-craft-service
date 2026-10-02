@@ -1,0 +1,91 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: image-craft-config
+data:
+  NODE_ENV: production
+  HOST: 0.0.0.0
+  PORT: "3000"
+  STORAGE_DRIVER: s3
+  S3_ENDPOINT: https://s3.example.com
+  S3_REGION: us-east-1
+  S3_BUCKET: image-craft
+  S3_FORCE_PATH_STYLE: "true"
+  CACHE_MAX_AGE_SECONDS: "86400"
+  NAMED_SOURCES: "{}"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: image-craft-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: image-craft-service
+  template:
+    metadata:
+      labels:
+        app: image-craft-service
+    spec:
+      containers:
+        - name: api
+          image: registry.example.com/image-craft-service:0.7.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: image-craft-config
+          env:
+            - name: S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: image-craft-secrets
+                  key: S3_ACCESS_KEY_ID
+            - name: S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: image-craft-secrets
+                  key: S3_SECRET_ACCESS_KEY
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: image-craft-service
+spec:
+  selector:
+    app: image-craft-service
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

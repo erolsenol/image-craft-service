@@ -43,6 +43,14 @@ describe("createCacheKey", () => {
     );
   });
 
+  it("separates source aliases when their credential scopes differ", () => {
+    const ops = [{ op: "resize", width: 400 }] as const;
+    const source = "https://cdn.example.com/assets/a.jpg";
+    expect(createCacheKey(source, ops, "jpeg", "alias-and-key-one")).not.toBe(
+      createCacheKey(source, ops, "jpeg", "alias-and-key-two"),
+    );
+  });
+
   it("ignores fragments because they are not sent with remote requests", () => {
     const ops = [{ op: "resize", width: 400 }] as const;
     expect(createCacheKey("https://example.com/a.jpg#first", ops)).toBe(

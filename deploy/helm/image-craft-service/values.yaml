@@ -1,0 +1,32 @@
+replicaCount: 2
+
+image:
+  repository: registry.example.com/image-craft-service
+  tag: "0.7.0"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+
+existingSecret: image-craft-secrets
+
+env:
+  NODE_ENV: production
+  HOST: 0.0.0.0
+  PORT: "3000"
+  STORAGE_DRIVER: s3
+  S3_ENDPOINT: https://s3.example.com
+  S3_REGION: us-east-1
+  S3_BUCKET: image-craft
+  S3_FORCE_PATH_STYLE: "true"
+  CACHE_MAX_AGE_SECONDS: "86400"
+  NAMED_SOURCES: "{}"
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi

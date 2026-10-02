@@ -1,9 +1,100 @@
 import { z } from "zod";
 import { validateApiKeyDefinitions } from "../security/api-keys.js";
 
+const namedSourceSchema = z
+  .object({
+    origin: z.string().url(),
+    allowedHosts: z.array(z.string().regex(/^[a-z0-9.-]+$/iu)).min(1),
+    headers: z.record(z.string().min(1), z.string().max(4096)).default({}),
+  })
+  .superRefine((source, context) => {
+    try {
+      const origin = new URL(source.origin);
+      if (
+        !["http:", "https:"].includes(origin.protocol) ||
+        origin.username ||
+        origin.password ||
+        origin.search ||
+        origin.hash
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["origin"],
+          message: "Named source origins must be credential-free HTTP(S) URLs",
+        });
+      }
+      if (
+        !source.allowedHosts.some(
+          (host) => host.toLowerCase() === origin.hostname.toLowerCase(),
+        )
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["allowedHosts"],
+          message: "allowedHosts must include the origin hostname",
+        });
+      }
+    } catch {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["origin"],
+        message: "Named source origin must be a valid URL",
+      });
+    }
+    for (const [name, value] of Object.entries(source.headers)) {
+      if (
+        !["authorization", "x-api-key", "x-access-token"].includes(
+          name.toLowerCase(),
+        ) ||
+        /[\r\n\0]/u.test(value)
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["headers", name],
+          message:
+            "Named source credentials may use authorization, x-api-key, or x-access-token without control characters",
+        });
+      }
+    }
+  });
+
+const namedSourcesSchema = z
+  .string()
+  .default("{}")
+  .transform((value, context) => {
+    if (!value.trim()) return {};
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(value);
+    } catch {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "NAMED_SOURCES must be valid JSON",
+      });
+      return {};
+    }
+    const parsed = z
+      .record(z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/u), namedSourceSchema)
+      .safeParse(decoded);
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues)
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: issue.path,
+          message: issue.message,
+        });
+      return {};
+    }
+    return parsed.data;
+  });
+
 const optionalSecret = z.preprocess(
   (value) => (value === "" ? undefined : value),
   z.string().min(32).optional(),
+);
+const optionalValue = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().min(1).optional(),
 );
 
 export const envSchema = z
@@ -108,7 +199,9 @@ export const envSchema = z
         }
       }, "OTEL_EXPORTER_OTLP_ENDPOINT must be an HTTP(S) URL without credentials"),
     ALLOWED_HOSTS: z.string().default(""),
+    NAMED_SOURCES: namedSourcesSchema,
     SIGNING_SECRET: z.string().optional(),
+    STORAGE_DRIVER: z.enum(["disk", "s3"]).default("disk"),
     CACHE_DIR: z.string().default("/tmp/image-craft-cache"),
     CACHE_MAX_SIZE_BYTES: z.coerce
       .number()
@@ -116,6 +209,24 @@ export const envSchema = z
       .positive()
       .default(536_870_912),
     CACHE_MAX_AGE_SECONDS: z.coerce.number().int().nonnegative().default(86400),
+    S3_ENDPOINT: z.preprocess(
+      (value) => (value === "" ? undefined : value),
+      z.string().url().optional(),
+    ),
+    S3_REGION: z.string().min(1).default("us-east-1"),
+    S3_BUCKET: optionalValue,
+    S3_ACCESS_KEY_ID: optionalValue,
+    S3_SECRET_ACCESS_KEY: optionalValue,
+    S3_FORCE_PATH_STYLE: z
+      .enum(["true", "false"])
+      .default("true")
+      .transform((value) => value === "true"),
+    S3_PRESIGNED_UPLOAD_TTL_SECONDS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(3600)
+      .default(900),
     QUEUE_ENABLED: z
       .enum(["true", "false"])
       .default("false")
@@ -174,6 +285,27 @@ export const envSchema = z
       }, "REMBG_URL must be an HTTP(S) URL without credentials"),
   })
   .superRefine((settings, context) => {
+    if (settings.STORAGE_DRIVER === "s3" && !settings.S3_BUCKET)
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["S3_BUCKET"],
+        message: "S3_BUCKET is required when STORAGE_DRIVER=s3",
+      });
+    if (
+      Boolean(settings.S3_ACCESS_KEY_ID) !==
+      Boolean(settings.S3_SECRET_ACCESS_KEY)
+    )
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["S3_SECRET_ACCESS_KEY"],
+        message: "S3 access key ID and secret access key must be set together",
+      });
+    if (settings.S3_ENDPOINT && !isCredentialFreeHttpUrl(settings.S3_ENDPOINT))
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["S3_ENDPOINT"],
+        message: "S3_ENDPOINT must use HTTP(S)",
+      });
     if (
       settings.MAX_UPLOAD_BYTES * settings.CONCURRENCY_LIMIT >
       256 * 1024 * 1024
@@ -218,3 +350,16 @@ export type AppConfig = typeof config;
 export const allowedHosts = config.ALLOWED_HOSTS.split(",")
   .map((host) => host.trim().toLowerCase())
   .filter(Boolean);
+
+function isCredentialFreeHttpUrl(value: string): boolean {
+  try {
+    const endpoint = new URL(value);
+    return (
+      ["http:", "https:"].includes(endpoint.protocol) &&
+      !endpoint.username &&
+      !endpoint.password
+    );
+  } catch {
+    return false;
+  }
+}
