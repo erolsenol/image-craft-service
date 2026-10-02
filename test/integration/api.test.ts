@@ -2,6 +2,8 @@ import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../../src/api/app.js";
 import type { AppConfig } from "../../src/config/index.js";
+import { createCacheKey } from "../../src/storage/cache-key.js";
+import type { Storage } from "../../src/storage/storage.js";
 
 const testConfig: AppConfig = {
   NODE_ENV: "test",
@@ -16,6 +18,7 @@ const testConfig: AppConfig = {
   SIGNING_SECRET: undefined,
   CACHE_DIR: "/tmp/image-craft-test-cache",
   CACHE_MAX_AGE_SECONDS: 60,
+  CACHE_MAX_SIZE_BYTES: 1024 * 1024,
 };
 function multipart(
   image: Buffer,
@@ -42,8 +45,23 @@ function multipart(
   };
 }
 
+class MemoryStorage implements Storage {
+  readonly values = new Map<string, Buffer>();
+  async get(key: string): Promise<Buffer | undefined> {
+    return this.values.get(key);
+  }
+  async set(key: string, value: Buffer, ttlSeconds: number): Promise<void> {
+    void ttlSeconds;
+    this.values.set(key, value);
+  }
+  async delete(key: string): Promise<void> {
+    this.values.delete(key);
+  }
+}
+
 describe("HTTP API", () => {
-  const app = createApp(testConfig);
+  const storage = new MemoryStorage();
+  const app = createApp(testConfig, storage);
   let image: Buffer;
   beforeAll(async () => {
     image = await sharp({
@@ -90,7 +108,27 @@ describe("HTTP API", () => {
       "/v1/img/w_2/https://127.0.0.1/private.jpg",
     );
     expect(response.statusCode).toBe(403);
+    expect(response.headers["x-cache"]).toBe("MISS");
     expect(response.body).not.toContain("stack");
+  });
+
+  it("returns a cache hit for a stored remote transform", async () => {
+    const server = await app;
+    const source = new URL("https://example.com/photo.jpg");
+    const ops = [
+      { op: "resize", width: 4 },
+      { op: "format", format: "webp" },
+    ] as const;
+    const cachedImage = await sharp(image).resize(4).webp().toBuffer();
+    storage.values.set(createCacheKey(source, ops), cachedImage);
+
+    const response = await server.inject(
+      "/v1/img/w_4,f_webp/https://example.com/photo.jpg",
+    );
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["x-cache"]).toBe("HIT");
+    expect(response.headers["content-type"]).toContain("image/webp");
+    expect(response.rawPayload).toEqual(cachedImage);
   });
 
   it("returns metadata and rejects non-images", async () => {

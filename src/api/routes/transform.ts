@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { AppConfig } from "../../config/index.js";
@@ -7,15 +6,16 @@ import { transformImage } from "../../core/engine.js";
 import { fetchRemoteImage } from "../../security/ssrf.js";
 import { verifySignature } from "../../security/signing.js";
 import { validateImage } from "../../security/limits.js";
-import type { CacheAdapter } from "../../storage/cache.js";
+import { createCacheKey } from "../../storage/cache-key.js";
+import type { Storage } from "../../storage/storage.js";
 import { operationsSchema, type Operation } from "../schemas/operations.js";
 
 const jsonOpsSchema = z.object({ ops: operationsSchema });
 export async function transformRoutes(
   app: FastifyInstance,
-  options: { config: AppConfig; cache: CacheAdapter },
+  options: { config: AppConfig; storage: Storage },
 ): Promise<void> {
-  const { config, cache } = options;
+  const { config, storage } = options;
   app.addSchema({
     $id: "Error",
     type: "object",
@@ -204,19 +204,20 @@ export async function transformRoutes(
       } catch {
         throw new AppError("Invalid URL operations", 400);
       }
-      const key = `${source.toString()}|${JSON.stringify(parsedOps)}`;
-      const etag = `"${createHash("sha256").update(key).digest("hex")}"`;
+      const key = createCacheKey(source, parsedOps);
+      const etag = `"${key}"`;
       reply
         .header("ETag", etag)
         .header(
           "Cache-Control",
           `public, max-age=${config.CACHE_MAX_AGE_SECONDS}`,
         );
+      let output = await storage.get(key);
+      reply.header("X-Cache", output === undefined ? "MISS" : "HIT");
       if (request.headers["if-none-match"] === etag)
         return reply.code(304).send();
-      let output = await cache.get(key);
       let contentType = "image/jpeg";
-      if (!output) {
+      if (output === undefined) {
         const remote = await fetchRemoteImage(source.toString(), {
           allowedHosts: config.ALLOWED_HOSTS.split(",")
             .map((host) => host.trim().toLowerCase())
@@ -233,7 +234,7 @@ export async function transformRoutes(
         );
         output = result.buffer;
         contentType = result.contentType;
-        await cache.set(key, output);
+        await storage.set(key, output, config.CACHE_MAX_AGE_SECONDS);
       } else {
         const format = [...parsedOps]
           .reverse()

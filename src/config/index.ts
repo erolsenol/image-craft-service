@@ -26,6 +26,7 @@ const envSchema = z.object({
   ALLOWED_HOSTS: z.string().default(""),
   SIGNING_SECRET: z.string().optional(),
   CACHE_DIR: z.string().default("/tmp/image-craft-cache"),
+  CACHE_MAX_SIZE_BYTES: z.coerce.number().int().positive().default(536_870_912),
   CACHE_MAX_AGE_SECONDS: z.coerce.number().int().nonnegative().default(86400),
 });
 

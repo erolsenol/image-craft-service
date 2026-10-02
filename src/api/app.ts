@@ -6,11 +6,15 @@ import swaggerUi from "@fastify/swagger-ui";
 import type { AppConfig } from "../config/index.js";
 import { healthRoutes } from "./routes/health.js";
 import { transformRoutes } from "./routes/transform.js";
-import { LocalCache } from "../storage/local-cache.js";
+import { DiskStorage } from "../storage/disk-storage.js";
+import type { Storage } from "../storage/storage.js";
 import { AppError } from "../core/errors.js";
 import type { FastifyRequest } from "fastify";
 
-export async function createApp(config: AppConfig = defaultConfig) {
+export async function createApp(
+  config: AppConfig = defaultConfig,
+  storage?: Storage,
+) {
   const app = Fastify({
     logger: { level: config.NODE_ENV === "development" ? "debug" : "info" },
     requestIdHeader: "x-request-id",
@@ -60,7 +64,8 @@ export async function createApp(config: AppConfig = defaultConfig) {
   await app.register(healthRoutes);
   await app.register(transformRoutes, {
     config,
-    cache: new LocalCache(config.CACHE_DIR),
+    storage:
+      storage ?? new DiskStorage(config.CACHE_DIR, config.CACHE_MAX_SIZE_BYTES),
   });
   return app;
 }
