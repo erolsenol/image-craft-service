@@ -2,14 +2,22 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+## [0.1.4] - 2026-10-02
+
+### Security
+
+- Restrict remote fetches to globally routable unicast IPs, including IPv6 special-purpose range checks.
+- Bound shared image-processing concurrency and aggregate batch-result memory; use a fixed ZIP download filename.
+- Validate resource limits at startup and return safe image-processing errors.
+
 ## [0.1.3] - 2026-10-02
 
 ### Added
 
 - Optional typed image plugin interface and rembg-backed background removal plugin.
 - Docker Compose `plugins` profile and plugin author documentation.
-
-## [Unreleased]
 
 ## [0.1.2] - 2026-10-02
 

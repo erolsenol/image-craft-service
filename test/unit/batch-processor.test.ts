@@ -13,4 +13,10 @@ describe("createZip", () => {
     expect(archive.includes(Buffer.from("image-001.jpg"))).toBe(true);
     expect(archive.includes(Buffer.from("image-002.png"))).toBe(true);
   });
+
+  it("rejects archives that exceed the configured byte limit", async () => {
+    await expect(
+      createZip([{ name: "large.bin", buffer: Buffer.alloc(100) }], 20),
+    ).rejects.toThrow("Batch archive exceeds configured size limit");
+  });
 });

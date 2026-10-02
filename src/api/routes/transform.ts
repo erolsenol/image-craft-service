@@ -5,6 +5,7 @@ import { AppError } from "../../core/errors.js";
 import { runImageOperations } from "../../plugins/run-operations.js";
 import { createPluginRegistry } from "../../plugins/registry.js";
 import type { PluginRegistry } from "../../plugins/interface.js";
+import type { ConcurrencyLimiter } from "../../security/concurrency.js";
 import { fetchRemoteImage } from "../../security/ssrf.js";
 import { verifySignature } from "../../security/signing.js";
 import { validateImage } from "../../security/limits.js";
@@ -15,10 +16,16 @@ import { operationsSchema, type Operation } from "../schemas/operations.js";
 const jsonOpsSchema = z.object({ ops: operationsSchema });
 export async function transformRoutes(
   app: FastifyInstance,
-  options: { config: AppConfig; storage: Storage; plugins?: PluginRegistry },
+  options: {
+    config: AppConfig;
+    storage: Storage;
+    plugins?: PluginRegistry;
+    processingLimiter?: ConcurrencyLimiter;
+  },
 ): Promise<void> {
   const { config, storage } = options;
   const plugins = options.plugins ?? createPluginRegistry(config);
+  const { processingLimiter } = options;
   app.addSchema({
     $id: "Error",
     type: "object",
@@ -81,13 +88,13 @@ export async function transformRoutes(
       );
       if (!parsed.success)
         return reply.code(400).send({ error: "Invalid operations" });
-      await validateImage(image, config.MAX_INPUT_PIXELS);
       const result = await runImageOperations(
         image,
         parsed.data,
         plugins,
         config.MAX_INPUT_PIXELS,
         config.MAX_OUTPUT_DIMENSION,
+        processingLimiter,
       );
       return reply.type(result.contentType).send(result.buffer);
     },
@@ -124,11 +131,16 @@ export async function transformRoutes(
       });
       if (!part) return reply.code(400).send({ error: "file is required" });
       const buffer = await part.toBuffer();
-      await validateImage(buffer, config.MAX_INPUT_PIXELS);
       const sharp = (await import("sharp")).default;
-      const metadata = await sharp(buffer, {
-        limitInputPixels: config.MAX_INPUT_PIXELS,
-      }).metadata();
+      const readMetadata = async () => {
+        await validateImage(buffer, config.MAX_INPUT_PIXELS);
+        return sharp(buffer, {
+          limitInputPixels: config.MAX_INPUT_PIXELS,
+        }).metadata();
+      };
+      const metadata = processingLimiter
+        ? await processingLimiter.run(readMetadata)
+        : await readMetadata();
       let exif: Record<string, unknown> | undefined;
       if (metadata.exif) {
         try {
@@ -229,13 +241,13 @@ export async function transformRoutes(
           timeoutMs: config.REQUEST_TIMEOUT_MS,
           maxBytes: config.MAX_UPLOAD_BYTES,
         });
-        await validateImage(remote.body, config.MAX_INPUT_PIXELS);
         const result = await runImageOperations(
           remote.body,
           parsedOps,
           plugins,
           config.MAX_INPUT_PIXELS,
           config.MAX_OUTPUT_DIMENSION,
+          processingLimiter,
         );
         output = result.buffer;
         contentType = result.contentType;

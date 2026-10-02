@@ -6,6 +6,7 @@ import type { AppConfig } from "../config/index.js";
 import type { Storage } from "../storage/storage.js";
 import { processBatch } from "./batch-processor.js";
 import type { BatchJobStatus, BatchQueue, BatchRequest } from "./types.js";
+import { ConcurrencyLimiter } from "../security/concurrency.js";
 
 const queueName = "image-craft-batch";
 
@@ -14,7 +15,14 @@ export class BullMqBatchQueue implements BatchQueue {
   private readonly queue: Queue<BatchRequest>;
   private readonly worker: Worker<BatchRequest>;
 
-  constructor(config: AppConfig, storage: Storage, logger?: FastifyBaseLogger) {
+  constructor(
+    config: AppConfig,
+    storage: Storage,
+    logger?: FastifyBaseLogger,
+    processingLimiter = new ConcurrencyLimiter(
+      config.IMAGE_PROCESSING_CONCURRENCY,
+    ),
+  ) {
     this.connection = new Redis(config.REDIS_URL, {
       maxRetriesPerRequest: null,
     });
@@ -35,8 +43,13 @@ export class BullMqBatchQueue implements BatchQueue {
     this.worker = new Worker<BatchRequest>(
       queueName,
       async (job) =>
-        processBatch(job.data, job.id!, config, storage, (progress) =>
-          job.updateProgress(progress),
+        processBatch(
+          job.data,
+          job.id!,
+          config,
+          storage,
+          (progress) => job.updateProgress(progress),
+          processingLimiter,
         ),
       { connection: this.connection, concurrency: config.BATCH_CONCURRENCY },
     );

@@ -41,7 +41,7 @@ describe("DiskStorage", () => {
     await storage.set("old", value, 60);
     await storage.set("recent", value, 60);
     expect(await storage.get("old")).toEqual(value);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 50));
     await storage.set("new", value, 60);
 
     expect(await storage.get("old")).toEqual(value);
@@ -62,5 +62,20 @@ describe("DiskStorage", () => {
     await storage.set("large", Buffer.alloc(11), 60);
     expect(await storage.get("large")).toBeUndefined();
     expect(await readdir(directory)).toEqual([]);
+  });
+
+  it("turns traversal-like keys into hashed filenames", async () => {
+    const storage = new DiskStorage(directory, 1024);
+    await storage.set(
+      "../../outside/../../etc/passwd",
+      Buffer.from("safe"),
+      60,
+    );
+    expect(await storage.get("../../outside/../../etc/passwd")).toEqual(
+      Buffer.from("safe"),
+    );
+    expect(await readdir(directory)).toEqual([
+      expect.stringMatching(/^[a-f0-9]{64}\.entry$/u),
+    ]);
   });
 });

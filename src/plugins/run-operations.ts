@@ -3,6 +3,7 @@ import type { CoreOperation, Operation } from "../api/schemas/operations.js";
 import { AppError } from "../core/errors.js";
 import { transformImage, type TransformResult } from "../core/engine.js";
 import { validateImage } from "../security/limits.js";
+import type { ConcurrencyLimiter } from "../security/concurrency.js";
 import type { PluginRegistry } from "./interface.js";
 
 export async function runImageOperations(
@@ -11,7 +12,35 @@ export async function runImageOperations(
   plugins: PluginRegistry,
   maxPixels: number,
   maxDimension: number,
+  limiter?: ConcurrencyLimiter,
 ): Promise<TransformResult> {
+  if (limiter)
+    return limiter.run(() =>
+      runImageOperationsUnbounded(
+        input,
+        operations,
+        plugins,
+        maxPixels,
+        maxDimension,
+      ),
+    );
+  return runImageOperationsUnbounded(
+    input,
+    operations,
+    plugins,
+    maxPixels,
+    maxDimension,
+  );
+}
+
+async function runImageOperationsUnbounded(
+  input: Buffer,
+  operations: readonly Operation[],
+  plugins: PluginRegistry,
+  maxPixels: number,
+  maxDimension: number,
+): Promise<TransformResult> {
+  await validateImage(input, maxPixels);
   let buffer = input;
   let pluginResult: TransformResult | undefined;
   let pending: CoreOperation[] = [];
