@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.2] - 2026-10-02
+
+### Added
+
+- Optional BullMQ and Redis batch jobs with progress polling and downloadable ZIP results.
+
 ## [0.1.1] - 2026-10-02
 
 ### Added

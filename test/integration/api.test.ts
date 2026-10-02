@@ -4,6 +4,11 @@ import { createApp } from "../../src/api/app.js";
 import type { AppConfig } from "../../src/config/index.js";
 import { createCacheKey } from "../../src/storage/cache-key.js";
 import type { Storage } from "../../src/storage/storage.js";
+import type {
+  BatchJobStatus,
+  BatchQueue,
+  BatchRequest,
+} from "../../src/jobs/types.js";
 
 const testConfig: AppConfig = {
   NODE_ENV: "test",
@@ -19,6 +24,11 @@ const testConfig: AppConfig = {
   CACHE_DIR: "/tmp/image-craft-test-cache",
   CACHE_MAX_AGE_SECONDS: 60,
   CACHE_MAX_SIZE_BYTES: 1024 * 1024,
+  QUEUE_ENABLED: false,
+  REDIS_URL: "redis://127.0.0.1:6379",
+  BATCH_MAX_ITEMS: 3,
+  BATCH_CONCURRENCY: 1,
+  BATCH_RESULT_TTL_SECONDS: 3600,
 };
 function multipart(
   image: Buffer,
@@ -43,6 +53,29 @@ function multipart(
     payload: Buffer.concat(chunks),
     contentType: `multipart/form-data; boundary=${boundary}`,
   };
+}
+
+class MemoryBatchQueue implements BatchQueue {
+  readonly input: BatchRequest[] = [];
+  current: BatchJobStatus | undefined;
+  async enqueue(input: BatchRequest): Promise<string> {
+    this.input.push(input);
+    this.current = { id: "job-123", state: "waiting", progress: 0 };
+    return "job-123";
+  }
+  async get(id: string): Promise<BatchJobStatus | undefined> {
+    return this.current?.id === id ? this.current : undefined;
+  }
+  isReady(): boolean {
+    return true;
+  }
+  async close(): Promise<void> {}
+}
+
+class UnavailableBatchQueue extends MemoryBatchQueue {
+  isReady(): boolean {
+    return false;
+  }
 }
 
 class MemoryStorage implements Storage {
@@ -83,6 +116,91 @@ describe("HTTP API", () => {
     expect((await server.inject("/docs")).statusCode).toBe(200);
     expect(docs.json().paths).toHaveProperty("/v1/transform");
     expect(docs.json().paths).toHaveProperty("/v1/metadata");
+    expect(docs.json().paths).toHaveProperty("/v1/batch");
+    expect(docs.json().paths).toHaveProperty("/v1/jobs/{id}");
+  });
+
+  it("queues batch jobs and downloads the completed ZIP", async () => {
+    const batchQueue = new MemoryBatchQueue();
+    const batchStorage = new MemoryStorage();
+    const queueConfig = { ...testConfig, QUEUE_ENABLED: true };
+    const server = await createApp(queueConfig, batchStorage, batchQueue);
+    await server.ready();
+    const queued = await server.inject({
+      method: "POST",
+      url: "/v1/batch",
+      payload: {
+        sources: ["https://example.com/a.jpg", "https://example.com/b.png"],
+        ops: [{ op: "resize", width: 100 }],
+      },
+    });
+    expect(queued.statusCode).toBe(202);
+    expect(queued.json()).toMatchObject({
+      id: "job-123",
+      status: "waiting",
+      statusUrl: "/v1/jobs/job-123",
+    });
+    expect(batchQueue.input[0]?.sources).toHaveLength(2);
+
+    const waiting = await server.inject("/v1/jobs/job-123");
+    expect(waiting.json()).toMatchObject({ state: "waiting", progress: 0 });
+    const archive = Buffer.from("PK-test-zip");
+    batchStorage.values.set("batch-result:job-123", archive);
+    batchQueue.current = { id: "job-123", state: "completed", progress: 100 };
+    const completed = await server.inject("/v1/jobs/job-123");
+    expect(completed.statusCode).toBe(200);
+    expect(completed.headers["content-type"]).toContain("application/zip");
+    expect(completed.headers["content-disposition"]).toContain("attachment");
+    expect(completed.rawPayload).toEqual(archive);
+    await server.close();
+  });
+
+  it("keeps batch endpoints disabled unless a queue is configured", async () => {
+    const server = await app;
+    const response = await server.inject({
+      method: "POST",
+      url: "/v1/batch",
+      payload: {
+        sources: ["https://example.com/a.jpg"],
+        ops: [],
+      },
+    });
+    expect(response.statusCode).toBe(503);
+  });
+
+  it("rejects queue requests while Redis is unavailable", async () => {
+    const queue = new UnavailableBatchQueue();
+    const server = await createApp(testConfig, storage, queue);
+    await server.ready();
+    const response = await server.inject({
+      method: "POST",
+      url: "/v1/batch",
+      payload: { sources: ["https://example.com/a.jpg"], ops: [] },
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({ error: "Batch queue is unavailable" });
+    await server.close();
+  });
+
+  it("rejects invalid batch URLs and operation chains", async () => {
+    const queue = new MemoryBatchQueue();
+    const server = await createApp(
+      { ...testConfig, QUEUE_ENABLED: true },
+      storage,
+      queue,
+    );
+    await server.ready();
+    const response = await server.inject({
+      method: "POST",
+      url: "/v1/batch",
+      payload: {
+        sources: ["file:///etc/passwd"],
+        ops: [{ op: "resize" }],
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(queue.input).toHaveLength(0);
+    await server.close();
   });
   it("transforms multipart uploads", async () => {
     const server = await app;

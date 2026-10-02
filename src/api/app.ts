@@ -10,10 +10,14 @@ import { DiskStorage } from "../storage/disk-storage.js";
 import type { Storage } from "../storage/storage.js";
 import { AppError } from "../core/errors.js";
 import type { FastifyRequest } from "fastify";
+import { batchRoutes } from "./routes/batch.js";
+import type { BatchQueue } from "../jobs/types.js";
+import { BullMqBatchQueue } from "../jobs/bullmq-batch-queue.js";
 
 export async function createApp(
   config: AppConfig = defaultConfig,
   storage?: Storage,
+  batchQueue?: BatchQueue,
 ) {
   const app = Fastify({
     logger: { level: config.NODE_ENV === "development" ? "debug" : "info" },
@@ -21,6 +25,13 @@ export async function createApp(
     requestTimeout: config.REQUEST_TIMEOUT_MS,
     bodyLimit: config.MAX_UPLOAD_BYTES + 1024 * 1024,
   });
+  const activeStorage =
+    storage ?? new DiskStorage(config.CACHE_DIR, config.CACHE_MAX_SIZE_BYTES);
+  const activeQueue =
+    batchQueue ??
+    (config.QUEUE_ENABLED
+      ? new BullMqBatchQueue(config, activeStorage, app.log)
+      : undefined);
   let active = 0;
   const trackedRequests = new WeakSet<FastifyRequest>();
   app.addHook("onRequest", async (request, reply) => {
@@ -54,18 +65,25 @@ export async function createApp(
     openapi: {
       info: {
         title: "Image Craft Service",
-        version: "0.1.0",
+        version: "0.1.1",
         description: "Self-hosted image processing HTTP API",
       },
       servers: [{ url: "/" }],
     },
   });
   await app.register(swaggerUi, { routePrefix: "/docs" });
-  await app.register(healthRoutes);
+  await app.register(healthRoutes, {
+    ...(activeQueue ? { queue: activeQueue } : {}),
+  });
   await app.register(transformRoutes, {
     config,
-    storage:
-      storage ?? new DiskStorage(config.CACHE_DIR, config.CACHE_MAX_SIZE_BYTES),
+    storage: activeStorage,
   });
+  await app.register(batchRoutes, {
+    config,
+    storage: activeStorage,
+    ...(activeQueue ? { queue: activeQueue } : {}),
+  });
+  if (activeQueue) app.addHook("onClose", () => activeQueue.close());
   return app;
 }
