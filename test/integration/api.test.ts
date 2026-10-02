@@ -20,6 +20,7 @@ const testConfig: AppConfig = {
   MAX_OUTPUT_DIMENSION: 1000,
   REQUEST_TIMEOUT_MS: 2000,
   CONCURRENCY_LIMIT: 10,
+  IMAGE_PROCESSING_CONCURRENCY: 2,
   ALLOWED_HOSTS: "",
   SIGNING_SECRET: undefined,
   CACHE_DIR: "/tmp/image-craft-test-cache",
@@ -29,6 +30,7 @@ const testConfig: AppConfig = {
   REDIS_URL: "redis://127.0.0.1:6379",
   BATCH_MAX_ITEMS: 3,
   BATCH_CONCURRENCY: 1,
+  BATCH_MAX_RESULT_BYTES: 1024 * 1024,
   BATCH_RESULT_TTL_SECONDS: 3600,
   REMOVE_BACKGROUND_ENABLED: false,
   REMBG_URL: "http://127.0.0.1:7000",
@@ -78,6 +80,16 @@ class MemoryBatchQueue implements BatchQueue {
 class UnavailableBatchQueue extends MemoryBatchQueue {
   isReady(): boolean {
     return false;
+  }
+}
+
+class HostileStatusQueue extends MemoryBatchQueue {
+  async get(): Promise<BatchJobStatus> {
+    return {
+      id: 'evil"\r\nX-Injected: yes',
+      state: "completed",
+      progress: 100,
+    };
   }
 }
 
@@ -170,6 +182,27 @@ describe("HTTP API", () => {
     expect(completed.headers["content-type"]).toContain("application/zip");
     expect(completed.headers["content-disposition"]).toContain("attachment");
     expect(completed.rawPayload).toEqual(archive);
+    await server.close();
+  });
+
+  it("uses a fixed safe download filename for untrusted job status IDs", async () => {
+    const batchStorage = new MemoryStorage();
+    batchStorage.values.set(
+      'batch-result:evil"\r\nX-Injected: yes',
+      Buffer.from("zip"),
+    );
+    const server = await createApp(
+      testConfig,
+      batchStorage,
+      new HostileStatusQueue(),
+    );
+    await server.ready();
+    const response = await server.inject("/v1/jobs/request-id");
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-disposition"]).toBe(
+      'attachment; filename="image-craft-result.zip"',
+    );
+    expect(response.headers["x-injected"]).toBeUndefined();
     await server.close();
   });
 

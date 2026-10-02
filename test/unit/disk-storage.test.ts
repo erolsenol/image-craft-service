@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { utimes } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DiskStorage } from "../../src/storage/disk-storage.js";
 
@@ -41,7 +43,12 @@ describe("DiskStorage", () => {
     await storage.set("old", value, 60);
     await storage.set("recent", value, 60);
     expect(await storage.get("old")).toEqual(value);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    const recentPath = join(
+      directory,
+      `${createHash("sha256").update("recent").digest("hex")}.entry`,
+    );
+    const oldDate = new Date("2000-01-01T00:00:00.000Z");
+    await utimes(recentPath, oldDate, oldDate);
     await storage.set("new", value, 60);
 
     expect(await storage.get("old")).toEqual(value);
@@ -62,5 +69,20 @@ describe("DiskStorage", () => {
     await storage.set("large", Buffer.alloc(11), 60);
     expect(await storage.get("large")).toBeUndefined();
     expect(await readdir(directory)).toEqual([]);
+  });
+
+  it("turns traversal-like keys into hashed filenames", async () => {
+    const storage = new DiskStorage(directory, 1024);
+    await storage.set(
+      "../../outside/../../etc/passwd",
+      Buffer.from("safe"),
+      60,
+    );
+    expect(await storage.get("../../outside/../../etc/passwd")).toEqual(
+      Buffer.from("safe"),
+    );
+    expect(await readdir(directory)).toEqual([
+      expect.stringMatching(/^[a-f0-9]{64}\.entry$/u),
+    ]);
   });
 });

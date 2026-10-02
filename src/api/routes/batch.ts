@@ -129,7 +129,7 @@ export async function batchRoutes(
           .type("application/zip")
           .header(
             "Content-Disposition",
-            `attachment; filename="image-craft-${status.id}.zip"`,
+            'attachment; filename="image-craft-result.zip"',
           )
           .send(archive);
       }

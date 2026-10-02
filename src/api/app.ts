@@ -15,6 +15,7 @@ import type { BatchQueue } from "../jobs/types.js";
 import { BullMqBatchQueue } from "../jobs/bullmq-batch-queue.js";
 import { createPluginRegistry } from "../plugins/registry.js";
 import type { PluginRegistry } from "../plugins/interface.js";
+import { ConcurrencyLimiter } from "../security/concurrency.js";
 
 export async function createApp(
   config: AppConfig = defaultConfig,
@@ -31,10 +32,13 @@ export async function createApp(
   const activeStorage =
     storage ?? new DiskStorage(config.CACHE_DIR, config.CACHE_MAX_SIZE_BYTES);
   const activePlugins = plugins ?? createPluginRegistry(config);
+  const processingLimiter = new ConcurrencyLimiter(
+    config.IMAGE_PROCESSING_CONCURRENCY,
+  );
   const activeQueue =
     batchQueue ??
     (config.QUEUE_ENABLED
-      ? new BullMqBatchQueue(config, activeStorage, app.log)
+      ? new BullMqBatchQueue(config, activeStorage, app.log, processingLimiter)
       : undefined);
   let active = 0;
   const trackedRequests = new WeakSet<FastifyRequest>();
@@ -83,6 +87,7 @@ export async function createApp(
     config,
     storage: activeStorage,
     plugins: activePlugins,
+    processingLimiter,
   });
   await app.register(batchRoutes, {
     config,

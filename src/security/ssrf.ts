@@ -5,29 +5,6 @@ import { request as httpsRequest } from "node:https";
 import type { IncomingHttpHeaders } from "node:http";
 import ipaddr from "ipaddr.js";
 
-const forbiddenRanges: Array<[string, number]> = [
-  ["0.0.0.0", 8],
-  ["10.0.0.0", 8],
-  ["100.64.0.0", 10],
-  ["127.0.0.0", 8],
-  ["169.254.0.0", 16],
-  ["172.16.0.0", 12],
-  ["192.0.0.0", 24],
-  ["192.0.2.0", 24],
-  ["192.168.0.0", 16],
-  ["198.18.0.0", 15],
-  ["198.51.100.0", 24],
-  ["203.0.113.0", 24],
-  ["224.0.0.0", 4],
-  ["240.0.0.0", 4],
-  ["::", 128],
-  ["::1", 128],
-  ["fc00::", 7],
-  ["fe80::", 10],
-  ["ff00::", 8],
-  ["2001:db8::", 32],
-];
-
 export function isPublicIp(address: string): boolean {
   if (!ipaddr.isValid(address)) return false;
   const ip = ipaddr.parse(address);
@@ -37,17 +14,12 @@ export function isPublicIp(address: string): boolean {
     ip.isIPv4MappedAddress()
       ? ip.toIPv4Address()
       : ip;
-  return !forbiddenRanges.some(([range, prefix]) => {
-    const parsedRange = ipaddr.parse(range);
-    return (
-      normalized.kind() === parsedRange.kind() &&
-      normalized.match(parsedRange, prefix)
-    );
-  });
+  return normalized.range() === "unicast";
 }
 
 export async function resolvePublicAddresses(
   hostname: string,
+  resolver: (hostname: string) => Promise<string[]> = lookupAddresses,
 ): Promise<string[]> {
   if (
     hostname.toLowerCase() === "localhost" ||
@@ -56,14 +28,35 @@ export async function resolvePublicAddresses(
   ) {
     throw new AppError("Remote host is not allowed", 403);
   }
-  const records = await lookup(hostname, { all: true, verbatim: true });
+  const addresses = await resolver(hostname);
   if (
-    records.length === 0 ||
-    records.some(({ address }) => !isPublicIp(address))
+    addresses.length === 0 ||
+    addresses.some((address) => !isPublicIp(address))
   ) {
     throw new AppError("Remote host is not allowed", 403);
   }
+  return addresses;
+}
+
+async function lookupAddresses(hostname: string): Promise<string[]> {
+  const records = await lookup(hostname, { all: true, verbatim: true });
   return records.map(({ address }) => address);
+}
+
+export interface PinnedResponse {
+  statusCode: number;
+  headers: IncomingHttpHeaders;
+  body: Buffer;
+}
+
+export interface RemoteFetchDependencies {
+  resolveAddresses?: (hostname: string) => Promise<string[]>;
+  requestPinned?: (
+    url: URL,
+    address: string,
+    timeoutMs: number,
+    maxBytes: number,
+  ) => Promise<PinnedResponse>;
 }
 
 export interface RemoteResponse {
@@ -78,6 +71,7 @@ export async function fetchRemoteImage(
     timeoutMs: number;
     maxBytes: number;
   },
+  dependencies: RemoteFetchDependencies = {},
 ): Promise<RemoteResponse> {
   let current = new URL(input);
   const deadline = Date.now() + options.timeoutMs;
@@ -100,16 +94,22 @@ export async function fetchRemoteImage(
     ) {
       throw new AppError("Remote host is not allowed", 403);
     }
-    const addresses = await withTimeout(
-      resolvePublicAddresses(hostname),
-      remainingMs,
-    );
-    const result = await requestPinned(
-      current,
-      addresses[0]!,
-      remainingMs,
-      options.maxBytes,
-    );
+    const resolvedAddresses = dependencies.resolveAddresses
+      ? resolvePublicAddresses(hostname, dependencies.resolveAddresses)
+      : resolvePublicAddresses(hostname);
+    const addresses = await withTimeout(resolvedAddresses, remainingMs);
+    let result: PinnedResponse;
+    try {
+      result = await (dependencies.requestPinned ?? requestPinned)(
+        current,
+        addresses[0]!,
+        remainingMs,
+        options.maxBytes,
+      );
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      throw new AppError("Remote image request failed", 502);
+    }
     if (
       result.statusCode >= 300 &&
       result.statusCode < 400 &&
@@ -129,10 +129,19 @@ export async function fetchRemoteImage(
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(
-      () => reject(new Error("Remote request timed out")),
+      () => reject(new AppError("Remote request timed out", 504)),
       timeoutMs,
     );
-    promise.then(resolve, reject).finally(() => clearTimeout(timer));
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
   });
 }
 
@@ -141,7 +150,7 @@ function requestPinned(
   address: string,
   timeoutMs: number,
   maxBytes: number,
-): Promise<{ statusCode: number; headers: IncomingHttpHeaders; body: Buffer }> {
+): Promise<PinnedResponse> {
   return new Promise((resolve, reject) => {
     const requestFn = url.protocol === "https:" ? httpsRequest : httpRequest;
     const request = requestFn(
@@ -165,7 +174,7 @@ function requestPinned(
           response.statusCode >= 300 &&
           response.statusCode < 400
         ) {
-          response.resume();
+          response.destroy();
           resolve({
             statusCode: response.statusCode,
             headers: response.headers,
@@ -178,7 +187,9 @@ function requestPinned(
         response.on("data", (chunk: Buffer) => {
           total += chunk.length;
           if (total > maxBytes) {
-            request.destroy(new Error("Remote image exceeds size limit"));
+            request.destroy(
+              new AppError("Remote image exceeds size limit", 413),
+            );
             return;
           }
           chunks.push(chunk);
@@ -194,13 +205,13 @@ function requestPinned(
       },
     );
     const hardTimeout = setTimeout(
-      () => request.destroy(new Error("Remote request timed out")),
+      () => request.destroy(new AppError("Remote request timed out", 504)),
       timeoutMs,
     );
     hardTimeout.unref();
     request.on("close", () => clearTimeout(hardTimeout));
     request.on("timeout", () =>
-      request.destroy(new Error("Remote request timed out")),
+      request.destroy(new AppError("Remote request timed out", 504)),
     );
     request.on("error", reject);
     request.end();

@@ -1,6 +1,6 @@
 {
   "name": "image-craft-service",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Self-hosted image processing HTTP API",
   "license": "MIT",
   "type": "module",

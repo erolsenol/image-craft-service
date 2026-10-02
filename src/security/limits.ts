@@ -16,10 +16,20 @@ export async function validateImage(
   const mime = sniffImageMime(buffer);
   if (!mime || !allowedMimeTypes.has(mime))
     throw new AppError("Unsupported image type", 415);
-  const metadata = await sharp(buffer, {
-    limitInputPixels: maxPixels,
-    failOn: "error",
-  }).metadata();
+  let metadata: Awaited<ReturnType<ReturnType<typeof sharp>["metadata"]>>;
+  try {
+    metadata = await sharp(buffer, {
+      limitInputPixels: maxPixels,
+      failOn: "error",
+    }).metadata();
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.toLowerCase().includes("pixel limit")
+    )
+      throw new AppError("Image exceeds pixel limit", 413);
+    throw new AppError("Invalid image data", 415);
+  }
   if (
     !metadata.width ||
     !metadata.height ||
