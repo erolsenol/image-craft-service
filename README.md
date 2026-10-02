@@ -1,53 +1,25 @@
 # image-craft-service
 
-[![CI](https://github.com/erolsenol/image-craft-service/actions/workflows/ci.yml/badge.svg)](https://github.com/erolsenol/image-craft-service/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Node.js 20+](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org/)
+[![CI](https://github.com/erolsenol/image-craft-service/actions/workflows/ci.yml/badge.svg)](https://github.com/erolsenol/image-craft-service/actions/workflows/ci.yml) [![npm](https://img.shields.io/npm/v/image-craft-service)](https://www.npmjs.com/package/image-craft-service) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Node.js 20+](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org/)
 
-A self-hosted HTTP API for resizing, converting, and optimizing images with Sharp.
+**A self-hosted image processing API for teams that want image transforms on their own infrastructure.** Built with Node.js, Fastify, and Sharp.
 
-## Quick start
+## Features
 
-```sh
-docker build -t image-craft-service:0.1.4 .
-docker run --rm -p 3000:3000 image-craft-service:0.1.4
+- Resize, crop, rotate, blur, sharpen, watermark, grayscale, and convert to JPEG, PNG, WebP, or AVIF.
+- Transform uploaded images or public remote URLs; strip metadata from output.
+- Disk cache with TTL, size-bounded LRU eviction, and `X-Cache` headers.
+- Optional Redis-backed batch jobs that return ZIP downloads.
+- SSRF defenses, signed URLs, input and output limits, and bounded processing concurrency.
+- Optional rembg background removal plugin.
+
+## Before and after
+
+Turn a large JPEG into a smaller WebP with one request:
+
+```text
+photo.jpg (2400 × 1600, JPEG)  ── resize 400 × 300 + WebP ──▶  photo.webp
 ```
-
-The service listens at `http://localhost:3000`; interactive API docs are at `/docs`. Remote URL transforms report `X-Cache: HIT` or `X-Cache: MISS`; disk entries expire according to `CACHE_MAX_AGE_SECONDS` and are evicted least-recently-used when the size limit is reached.
-For local development, copy `.env.example` to `.env`, then run `npm ci && npm run dev`. To run the published npm package, use `npx image-craft-service@0.1.4` (Node.js 20+).
-
-### Batch jobs (optional)
-
-Set `QUEUE_ENABLED=true` and `REDIS_URL=redis://redis:6379` in `.env`, then start the API with Redis:
-
-```sh
-docker compose --profile queue up --build
-```
-
-Submit up to `BATCH_MAX_ITEMS` source URLs with one shared operation chain. Poll the returned `statusUrl`; it returns JSON while queued or processing, then the downloadable ZIP when complete.
-
-```sh
-curl -X POST http://localhost:3000/v1/batch \
-  -H 'content-type: application/json' \
-  -d '{"sources":["https://example.com/a.jpg","https://example.com/b.png"],"ops":[{"op":"resize","width":800},{"op":"format","format":"webp","quality":82}]}'
-
-# Poll the returned URL; when complete, save its ZIP response.
-curl -L http://localhost:3000/v1/jobs/JOB_ID -o images.zip
-```
-
-Remote batch sources use the same SSRF protections, host allowlist, request timeout, upload-size cap, pixel limit, and output-dimension limit as URL transforms. Redis stores job state; ZIP results use `BATCH_RESULT_TTL_SECONDS`.
-
-### Optional plugins
-
-The `remove-background` plugin uses a separate rembg container and is disabled by default. Set `REMOVE_BACKGROUND_ENABLED=true` in `.env`, then start the service with:
-
-```sh
-docker compose --profile plugins up --build
-```
-
-Use it in a multipart transform or batch operation chain with `{"op":"plugin","name":"remove-background","options":{}}`. The worker image and its model are downloaded separately; the model is retained in a Docker volume. See [src/plugins/README.md](src/plugins/README.md) to add plugins.
-
-## API
-
-Upload and transform an image with a JSON operation array in the multipart `ops` field:
 
 ```sh
 curl -X POST http://localhost:3000/v1/transform \
@@ -56,73 +28,86 @@ curl -X POST http://localhost:3000/v1/transform \
   --output photo.webp
 ```
 
-Fetch and transform a remote image (only public hosts are allowed):
+## Quick start
+
+Requires Docker. Start the API from a local checkout:
+
+```sh
+git clone https://github.com/erolsenol/image-craft-service.git
+cd image-craft-service
+docker build -t image-craft-service .
+docker run --rm -p 3000:3000 image-craft-service
+```
+
+Open [localhost:3000/docs](http://localhost:3000/docs) for interactive API docs. For local development with Node.js 20+, use `npm ci && npm run dev`.
+
+Transform a public image by URL:
 
 ```sh
 curl -L 'http://localhost:3000/v1/img/w_400,h_300,fit_cover,f_webp/https://example.com/photo.jpg' \
   --output photo.webp
 ```
 
-Inspect dimensions, format, and available EXIF fields (GPS fields are omitted):
+Remote images must resolve to public IP addresses. See [Security](#security) before exposing the API to untrusted clients.
 
-```sh
-curl -X POST http://localhost:3000/v1/metadata -F 'file=@photo.jpg'
-```
+## Benchmarks
 
-Remote URL operations support `w`, `h`, `fit`, `l` (left), `t` (top), `cw`/`ch` (crop width/height), `rot`, `blur`, `sharp`, `gray_1`, `wm` (URL-encoded text), `grav`, `f`, and `q` tokens. Operations are grouped in the order their operation type first appears.
+No benchmark results are published yet. Performance depends on the image, operation chain, hardware, and concurrency settings. A future benchmark will include its dataset, environment, and reproducible commands.
 
-Operations are applied in order: `resize` (`width`, `height`, `fit`), `crop` (`left`, `top`, `width`, `height`), `rotate` (`angle`), `blur` (`sigma`), `sharpen` (`sigma`), `grayscale`, `watermark` (`text`, optional `gravity`), and `format` (`format`, optional `quality`). Metadata is stripped from transformed images.
+## How it compares
+
+These projects overlap, but have different runtimes and feature sets. This table describes their published focus; it is not a performance or feature-parity claim.
+
+| Project                                       | Runtime and interface                                      | Published focus                                                                 |
+| --------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| **image-craft-service**                       | Node.js / TypeScript; multipart uploads and URL transforms | A small self-hosted API with optional Redis batch jobs, disk cache, and plugins |
+| [imgproxy](https://docs.imgproxy.net/)        | Standalone server; URL-based transforms                    | Broad image processing and optimization, including advanced formats and options |
+| [Thumbor](https://github.com/thumbor/thumbor) | Python; URL-based transforms and extensions                | Extensible image service with smart cropping and feature detection              |
+
+Choose based on your runtime, deployment model, and required transforms. This project is an early release and does not aim for feature parity with either established service.
+
+## API at a glance
+
+| Endpoint                    | Purpose                                              |
+| --------------------------- | ---------------------------------------------------- |
+| `POST /v1/transform`        | Upload and transform an image                        |
+| `GET /v1/img/:ops/*src`     | Fetch and transform a public remote image            |
+| `POST /v1/metadata`         | Read dimensions, format, and EXIF without GPS fields |
+| `POST /v1/batch`            | Submit URL transforms when Redis jobs are enabled    |
+| `GET /v1/jobs/:id`          | Poll a batch job or download its ZIP                 |
+| `GET /health`, `GET /ready` | Liveness and readiness checks                        |
+| `GET /docs`                 | OpenAPI documentation and Swagger UI                 |
+
+For URL transforms, operation tokens include `w`, `h`, `fit`, `rot`, `blur`, `sharp`, `gray_1`, `wm`, `f`, and `q`. Multipart requests accept a JSON `ops` array. See the examples above and [Swagger UI](http://localhost:3000/docs) for request schemas.
 
 ## Configuration
 
-| Variable                       | Default                  | Description                                                                                               |
-| ------------------------------ | ------------------------ | --------------------------------------------------------------------------------------------------------- |
-| `HOST`                         | `0.0.0.0`                | Bind address                                                                                              |
-| `PORT`                         | `3000`                   | HTTP port                                                                                                 |
-| `MAX_UPLOAD_BYTES`             | `20971520`               | Maximum uploaded or fetched input size                                                                    |
-| `MAX_INPUT_PIXELS`             | `40000000`               | Maximum decoded image pixels                                                                              |
-| `MAX_OUTPUT_DIMENSION`         | `4096`                   | Maximum output width or height                                                                            |
-| `REQUEST_TIMEOUT_MS`           | `30000`                  | Remote request and server request timeout                                                                 |
-| `CONCURRENCY_LIMIT`            | `8`                      | Maximum simultaneous requests (hard cap: 16; combined upload buffers capped at 256 MiB)                   |
-| `IMAGE_PROCESSING_CONCURRENCY` | `2`                      | Concurrent Sharp/plugin operations (hard cap: 4; pixel budget is capped at 80 million combined)           |
-| `ALLOWED_HOSTS`                | empty                    | Optional comma-separated remote host allowlist                                                            |
-| `SIGNING_SECRET`               | unset                    | Optional secret requiring HMAC-signed remote URLs                                                         |
-| `CACHE_DIR`                    | `/tmp/image-craft-cache` | Local disk cache directory                                                                                |
-| `CACHE_MAX_SIZE_BYTES`         | `536870912`              | Maximum disk cache size (512 MiB); least-recently-used entries are evicted first                          |
-| `CACHE_MAX_AGE_SECONDS`        | `86400`                  | Disk entry TTL and browser/proxy cache lifetime                                                           |
-| `QUEUE_ENABLED`                | `false`                  | Enable BullMQ batch jobs backed by Redis                                                                  |
-| `REDIS_URL`                    | `redis://127.0.0.1:6379` | Redis connection URL                                                                                      |
-| `BATCH_MAX_ITEMS`              | `20`                     | Maximum source URLs accepted by one batch                                                                 |
-| `BATCH_CONCURRENCY`            | `1`                      | Maximum batch jobs processed at the same time                                                             |
-| `BATCH_MAX_RESULT_BYTES`       | `134217728`              | Maximum total transformed bytes in one ZIP result; combined batch result and ZIP memory capped at 256 MiB |
-| `BATCH_RESULT_TTL_SECONDS`     | `86400`                  | How long completed ZIP results and job records are retained                                               |
-| `REMOVE_BACKGROUND_ENABLED`    | `false`                  | Enable the optional rembg background removal plugin                                                       |
-| `REMBG_URL`                    | `http://rembg:7000`      | Private rembg HTTP worker URL                                                                             |
-| `NODE_ENV`                     | `production`             | Runtime environment                                                                                       |
+All settings are environment variables validated at startup. See [.env.example](.env.example) for the full list.
 
-When `SIGNING_SECRET` is set, add `?sig=<hex HMAC-SHA256>` to a URL transform request. The signature is calculated over `<ops>/<source-url>`.
+| Variable                       | Default                            | Purpose                                        |
+| ------------------------------ | ---------------------------------- | ---------------------------------------------- |
+| `MAX_UPLOAD_BYTES`             | `20971520`                         | Maximum input size in bytes                    |
+| `MAX_INPUT_PIXELS`             | `40000000`                         | Decompression-bomb pixel limit                 |
+| `MAX_OUTPUT_DIMENSION`         | `4096`                             | Maximum output width or height                 |
+| `CONCURRENCY_LIMIT`            | `8`                                | Maximum simultaneous requests                  |
+| `IMAGE_PROCESSING_CONCURRENCY` | `2`                                | Concurrent image and plugin operations         |
+| `ALLOWED_HOSTS`                | unset                              | Optional comma-separated remote host allowlist |
+| `SIGNING_SECRET`               | unset                              | Require signed remote transform URLs           |
+| `CACHE_MAX_SIZE_BYTES`         | `536870912`                        | Maximum disk cache size                        |
+| `QUEUE_ENABLED` / `REDIS_URL`  | `false` / `redis://127.0.0.1:6379` | Enable Redis-backed batch jobs                 |
+| `REMOVE_BACKGROUND_ENABLED`    | `false`                            | Enable the optional rembg plugin               |
 
 ## Security
 
-Remote URLs are restricted to HTTP(S), DNS-resolved addresses are checked and pinned for the connection, and every redirect is validated again. Loopback, private, link-local, reserved, and cloud metadata ranges are blocked. Set `ALLOWED_HOSTS` to further restrict remote fetches. Uploads are sniffed by file signature, decoded pixel and byte limits are enforced, and API errors do not return stack traces or file paths. Keep `SIGNING_SECRET` private and use TLS at the reverse proxy.
-
-## Development
-
-```sh
-npm ci
-npm run lint
-npm run typecheck
-npm test
-npm run build
-```
+Remote fetches use HTTP(S), reject non-public IP ranges, pin checked DNS results, and validate redirect targets. Optional `ALLOWED_HOSTS` narrows remote sources further. Uploads are checked by file signature and bounded by byte and pixel limits. Keep the service behind trusted access controls; use `SIGNING_SECRET` and TLS when clients can request remote transforms. See [SECURITY.md](SECURITY.md).
 
 ## Roadmap
 
-- S3-compatible cache adapter
-- More compact URL operation syntax
-- Per-client authentication and rate limits
+- S3-compatible storage adapter
+- Authentication and per-client rate limits
 - Metrics and tracing
-- Additional image formats and animation controls
+- More formats and animation controls
+- Reproducible published benchmarks
 
 ## License
 

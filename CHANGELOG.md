@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-10-02
+
+### Changed
+
+- Rewrite the README with a concise project overview, usage example, comparison, and roadmap.
+
 ## [0.1.4] - 2026-10-02
 
 ### Security
