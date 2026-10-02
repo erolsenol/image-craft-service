@@ -32,7 +32,7 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: docker run --detach --rm --name image-craft-minio --publish 9000:9000 --env MINIO_ROOT_USER=minioadmin --env MINIO_ROOT_PASSWORD=minioadmin quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
+      - run: docker run --detach --rm --name image-craft-minio --publish 9000:9000 --env MINIO_ROOT_USER=minioadmin --env MINIO_ROOT_PASSWORD=minioadmin ghcr.io/coollabsio/minio:RELEASE.2025-04-22T22-12-26Z server /data
       - run: npm audit --audit-level=high
       - run: npm run lint
       - run: npm run typecheck
