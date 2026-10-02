@@ -226,6 +226,16 @@ export async function transformRoutes(
             },
           },
           403: { $ref: "Error#" },
+          429: {
+            $ref: "Error#",
+            description: "Remote transform rate limit exceeded",
+          },
+        },
+      },
+      config: {
+        rateLimit: {
+          max: config.REMOTE_TRANSFORM_RATE_LIMIT,
+          timeWindow: config.REMOTE_TRANSFORM_RATE_WINDOW_MS,
         },
       },
     },

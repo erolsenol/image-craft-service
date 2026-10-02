@@ -21,6 +21,8 @@ const testConfig: AppConfig = {
   MAX_OUTPUT_DIMENSION: 1000,
   REQUEST_TIMEOUT_MS: 2000,
   CONCURRENCY_LIMIT: 10,
+  REMOTE_TRANSFORM_RATE_LIMIT: 60,
+  REMOTE_TRANSFORM_RATE_WINDOW_MS: 60_000,
   IMAGE_PROCESSING_CONCURRENCY: 2,
   ALLOWED_HOSTS: "",
   SIGNING_SECRET: undefined,
@@ -164,6 +166,28 @@ describe("HTTP API", () => {
         expect.objectContaining({ name: "if-none-match", in: "header" }),
       ]),
     );
+  });
+
+  it("rate limits remote transforms by client IP", async () => {
+    const rateLimitedApp = await createApp(
+      { ...testConfig, REMOTE_TRANSFORM_RATE_LIMIT: 1 },
+      new MemoryStorage(),
+      undefined,
+      undefined,
+      {
+        remoteImageFetcher: async () => ({
+          body: image,
+          contentType: "image/jpeg",
+        }),
+      },
+    );
+    await rateLimitedApp.ready();
+    const url = "/v1/img/f_webp/https%3A%2F%2Fexample.com%2Frate.jpg";
+    expect((await rateLimitedApp.inject(url)).statusCode).toBe(200);
+    const limited = await rateLimitedApp.inject(url);
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toEqual({ error: "Rate limit exceeded" });
+    await rateLimitedApp.close();
   });
 
   it("queues batch jobs and downloads the completed ZIP", async () => {

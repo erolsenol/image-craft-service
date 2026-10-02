@@ -106,27 +106,29 @@ For URL transforms, operation tokens include `w`, `h`, `fit`, `rot`, `blur`, `sh
 
 All settings are environment variables validated at startup. See [.env.example](.env.example) for the full list.
 
-| Variable                       | Default                            | Purpose                                        |
-| ------------------------------ | ---------------------------------- | ---------------------------------------------- |
-| `MAX_UPLOAD_BYTES`             | `20971520`                         | Maximum input size in bytes                    |
-| `MAX_INPUT_PIXELS`             | `40000000`                         | Decompression-bomb pixel limit                 |
-| `MAX_OUTPUT_DIMENSION`         | `4096`                             | Maximum output width or height                 |
-| `CONCURRENCY_LIMIT`            | `8`                                | Maximum simultaneous requests                  |
-| `IMAGE_PROCESSING_CONCURRENCY` | `2`                                | Concurrent image and plugin operations         |
-| `ALLOWED_HOSTS`                | unset                              | Optional comma-separated remote host allowlist |
-| `SIGNING_SECRET`               | unset                              | Require signed remote transform URLs           |
-| `CACHE_MAX_SIZE_BYTES`         | `536870912`                        | Maximum disk cache size                        |
-| `QUEUE_ENABLED` / `REDIS_URL`  | `false` / `redis://127.0.0.1:6379` | Enable Redis-backed batch jobs                 |
-| `REMOVE_BACKGROUND_ENABLED`    | `false`                            | Enable the optional rembg plugin               |
+| Variable                          | Default                            | Purpose                                            |
+| --------------------------------- | ---------------------------------- | -------------------------------------------------- |
+| `MAX_UPLOAD_BYTES`                | `20971520`                         | Maximum input size in bytes                        |
+| `MAX_INPUT_PIXELS`                | `40000000`                         | Decompression-bomb pixel limit                     |
+| `MAX_OUTPUT_DIMENSION`            | `4096`                             | Maximum output width or height                     |
+| `CONCURRENCY_LIMIT`               | `8`                                | Maximum simultaneous requests                      |
+| `REMOTE_TRANSFORM_RATE_LIMIT`     | `60`                               | Remote transforms allowed per IP per window        |
+| `REMOTE_TRANSFORM_RATE_WINDOW_MS` | `60000`                            | Remote transform rate-limit window in milliseconds |
+| `IMAGE_PROCESSING_CONCURRENCY`    | `2`                                | Concurrent image and plugin operations             |
+| `ALLOWED_HOSTS`                   | unset                              | Optional comma-separated remote host allowlist     |
+| `SIGNING_SECRET`                  | unset                              | Require signed remote transform URLs               |
+| `CACHE_MAX_SIZE_BYTES`            | `536870912`                        | Maximum disk cache size                            |
+| `QUEUE_ENABLED` / `REDIS_URL`     | `false` / `redis://127.0.0.1:6379` | Enable Redis-backed batch jobs                     |
+| `REMOVE_BACKGROUND_ENABLED`       | `false`                            | Enable the optional rembg plugin                   |
 
 ## Security
 
-Remote fetches use HTTP(S), reject non-public IP ranges, pin checked DNS results, and validate redirect targets. Optional `ALLOWED_HOSTS` narrows remote sources further. Uploads are checked by file signature and bounded by byte and pixel limits. Keep the service behind trusted access controls; use `SIGNING_SECRET` and TLS when clients can request remote transforms. See [SECURITY.md](SECURITY.md).
+Remote fetches use HTTP(S), reject non-public IP ranges, pin checked DNS results, and validate redirect targets. Optional `ALLOWED_HOSTS` narrows remote sources further. URL transforms are rate limited per client IP; keep Fastify proxy trust disabled unless the proxy chain is configured safely. Uploads are checked by file signature and bounded by byte and pixel limits. Keep the service behind trusted access controls; use `SIGNING_SECRET` and TLS when clients can request remote transforms. See [SECURITY.md](SECURITY.md).
 
 ## Roadmap
 
 - S3-compatible storage adapter
-- Authentication and per-client rate limits
+- Authentication and per-client quotas
 - Metrics and tracing
 - More formats and animation controls
 - Reproducible published benchmarks

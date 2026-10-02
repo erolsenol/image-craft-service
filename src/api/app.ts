@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { config as defaultConfig } from "../config/index.js";
 import multipart from "@fastify/multipart";
+import rateLimit from "@fastify/rate-limit";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import type { AppConfig } from "../config/index.js";
@@ -67,13 +68,22 @@ export async function createApp(
           : 500;
     const status = statusCode >= 400 && statusCode < 500 ? statusCode : 500;
     const message =
-      error instanceof AppError ? error.message : "Request failed";
+      error instanceof AppError
+        ? error.message
+        : status === 429
+          ? "Rate limit exceeded"
+          : "Request failed";
     return reply
       .code(status)
       .send({ error: status === 500 ? "Internal server error" : message });
   });
   await app.register(multipart, {
     limits: { fileSize: config.MAX_UPLOAD_BYTES, files: 1, fields: 1 },
+  });
+  await app.register(rateLimit, {
+    global: false,
+    max: config.REMOTE_TRANSFORM_RATE_LIMIT,
+    timeWindow: config.REMOTE_TRANSFORM_RATE_WINDOW_MS,
   });
   await app.register(swagger, {
     openapi: {
