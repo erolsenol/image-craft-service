@@ -1,6 +1,6 @@
 import { AppError } from "./errors.js";
 import sharp, { type FitEnum, type Gravity } from "sharp";
-import type { Operation } from "../api/schemas/operations.js";
+import type { CoreOperation } from "../api/schemas/operations.js";
 import { assertOutputDimensions } from "../security/limits.js";
 
 export interface TransformResult {
@@ -18,7 +18,7 @@ const contentTypes = {
 
 export async function transformImage(
   input: Buffer,
-  operations: readonly Operation[],
+  operations: readonly CoreOperation[],
   maxPixels: number,
   maxDimension: number,
 ): Promise<TransformResult> {

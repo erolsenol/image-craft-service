@@ -1,6 +1,7 @@
 import { ZipArchive } from "archiver";
 import { AppError } from "../core/errors.js";
-import { transformImage } from "../core/engine.js";
+import { runImageOperations } from "../plugins/run-operations.js";
+import { createPluginRegistry } from "../plugins/registry.js";
 import type { AppConfig } from "../config/index.js";
 import { fetchRemoteImage } from "../security/ssrf.js";
 import { validateImage } from "../security/limits.js";
@@ -18,6 +19,7 @@ export async function processBatch(
   const allowedHosts = config.ALLOWED_HOSTS.split(",")
     .map((host) => host.trim().toLowerCase())
     .filter(Boolean);
+  const plugins = createPluginRegistry(config);
 
   for (const [index, source] of input.sources.entries()) {
     const remote = await fetchRemoteImage(source, {
@@ -26,9 +28,10 @@ export async function processBatch(
       maxBytes: config.MAX_UPLOAD_BYTES,
     });
     await validateImage(remote.body, config.MAX_INPUT_PIXELS);
-    const result = await transformImage(
+    const result = await runImageOperations(
       remote.body,
       input.ops,
+      plugins,
       config.MAX_INPUT_PIXELS,
       config.MAX_OUTPUT_DIMENSION,
     );

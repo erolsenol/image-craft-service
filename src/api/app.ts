@@ -13,11 +13,14 @@ import type { FastifyRequest } from "fastify";
 import { batchRoutes } from "./routes/batch.js";
 import type { BatchQueue } from "../jobs/types.js";
 import { BullMqBatchQueue } from "../jobs/bullmq-batch-queue.js";
+import { createPluginRegistry } from "../plugins/registry.js";
+import type { PluginRegistry } from "../plugins/interface.js";
 
 export async function createApp(
   config: AppConfig = defaultConfig,
   storage?: Storage,
   batchQueue?: BatchQueue,
+  plugins?: PluginRegistry,
 ) {
   const app = Fastify({
     logger: { level: config.NODE_ENV === "development" ? "debug" : "info" },
@@ -27,6 +30,7 @@ export async function createApp(
   });
   const activeStorage =
     storage ?? new DiskStorage(config.CACHE_DIR, config.CACHE_MAX_SIZE_BYTES);
+  const activePlugins = plugins ?? createPluginRegistry(config);
   const activeQueue =
     batchQueue ??
     (config.QUEUE_ENABLED
@@ -65,7 +69,7 @@ export async function createApp(
     openapi: {
       info: {
         title: "Image Craft Service",
-        version: "0.1.1",
+        version: "0.1.2",
         description: "Self-hosted image processing HTTP API",
       },
       servers: [{ url: "/" }],
@@ -78,6 +82,7 @@ export async function createApp(
   await app.register(transformRoutes, {
     config,
     storage: activeStorage,
+    plugins: activePlugins,
   });
   await app.register(batchRoutes, {
     config,

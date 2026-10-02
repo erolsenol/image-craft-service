@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.3] - 2026-10-02
+
+### Added
+
+- Optional typed image plugin interface and rembg-backed background removal plugin.
+- Docker Compose `plugins` profile and plugin author documentation.
+
+## [Unreleased]
+
 ## [0.1.2] - 2026-10-02
 
 ### Added

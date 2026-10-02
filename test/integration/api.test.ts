@@ -4,6 +4,7 @@ import { createApp } from "../../src/api/app.js";
 import type { AppConfig } from "../../src/config/index.js";
 import { createCacheKey } from "../../src/storage/cache-key.js";
 import type { Storage } from "../../src/storage/storage.js";
+import type { PluginRegistry } from "../../src/plugins/interface.js";
 import type {
   BatchJobStatus,
   BatchQueue,
@@ -29,6 +30,8 @@ const testConfig: AppConfig = {
   BATCH_MAX_ITEMS: 3,
   BATCH_CONCURRENCY: 1,
   BATCH_RESULT_TTL_SECONDS: 3600,
+  REMOVE_BACKGROUND_ENABLED: false,
+  REMBG_URL: "http://127.0.0.1:7000",
 };
 function multipart(
   image: Buffer,
@@ -94,7 +97,22 @@ class MemoryStorage implements Storage {
 
 describe("HTTP API", () => {
   const storage = new MemoryStorage();
-  const app = createApp(testConfig, storage);
+  const app = createApp(
+    testConfig,
+    storage,
+    undefined,
+    new Map([
+      [
+        "test-pass-through",
+        {
+          name: "test-pass-through",
+          async run(buffer) {
+            return buffer;
+          },
+        },
+      ],
+    ]) satisfies PluginRegistry,
+  );
   let image: Buffer;
   beforeAll(async () => {
     image = await sharp({
@@ -153,6 +171,21 @@ describe("HTTP API", () => {
     expect(completed.headers["content-disposition"]).toContain("attachment");
     expect(completed.rawPayload).toEqual(archive);
     await server.close();
+  });
+
+  it("runs an enabled plugin operation through multipart transform", async () => {
+    const server = await app;
+    const form = multipart(image, {
+      ops: '[{"op":"plugin","name":"test-pass-through","options":{}}]',
+    });
+    const response = await server.inject({
+      method: "POST",
+      url: "/v1/transform",
+      headers: { "content-type": form.contentType },
+      payload: form.payload,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toContain("image/jpeg");
   });
 
   it("keeps batch endpoints disabled unless a queue is configured", async () => {
