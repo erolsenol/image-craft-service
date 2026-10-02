@@ -1,0 +1,24 @@
+name: Bug report
+description: Report a reproducible problem
+labels: [bug]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      {
+        label: What happened?,
+        description: Include expected and actual behavior.,
+      }
+    validations: { required: true }
+  - type: textarea
+    id: reproduce
+    attributes:
+      {
+        label: Steps to reproduce,
+        description: Provide a minimal request without secrets.,
+      }
+    validations: { required: true }
+  - type: input
+    id: version
+    attributes: { label: Image Craft Service version }
+    validations: { required: true }
