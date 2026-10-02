@@ -10,7 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
-import type { Storage } from "./storage.js";
+import type { Storage, StorageStats } from "./storage.js";
 
 interface Entry {
   path: string;
@@ -90,6 +90,38 @@ export class DiskStorage implements Storage {
 
   async delete(key: string): Promise<void> {
     await this.withMutation(() => removeIfPresent(this.pathFor(key)));
+  }
+
+  async stats(): Promise<StorageStats> {
+    let entries = 0;
+    let sizeBytes = 0;
+    let names: string[];
+    try {
+      names = await readdir(this.directory);
+    } catch (error) {
+      if (isNotFound(error))
+        return { entries, sizeBytes, maxSizeBytes: this.maxSizeBytes };
+      throw error;
+    }
+
+    for (const name of names) {
+      if (!name.endsWith(".entry")) continue;
+      const path = join(this.directory, name);
+      try {
+        const [contents, metadata] = await Promise.all([
+          readFile(path),
+          stat(path),
+        ]);
+        const entry = decodeEntry(contents);
+        if (entry && entry.expiresAt > Date.now()) {
+          entries += 1;
+          sizeBytes += metadata.size;
+        }
+      } catch (error) {
+        if (!isNotFound(error)) throw error;
+      }
+    }
+    return { entries, sizeBytes, maxSizeBytes: this.maxSizeBytes };
   }
 
   private pathFor(key: string): string {

@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-02
+
+### Added
+
+- Storage statistics and normalized cache keys that include the output format.
+- Single-flight handling for concurrent identical remote image transforms.
+- Content-based ETags, `If-None-Match` responses, and documented cache headers.
+- Expiring HMAC-SHA256 signed transform URLs and the `npm run sign` helper.
+- Per-IP rate limiting for remote URL transforms, configurable through environment variables.
+
 ## [0.1.5] - 2026-10-02
 
 ### Changed

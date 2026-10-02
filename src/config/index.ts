@@ -32,6 +32,18 @@ export const envSchema = z
       .max(300_000)
       .default(30_000),
     CONCURRENCY_LIMIT: z.coerce.number().int().positive().max(16).default(8),
+    REMOTE_TRANSFORM_RATE_LIMIT: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(10_000)
+      .default(60),
+    REMOTE_TRANSFORM_RATE_WINDOW_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(3_600_000)
+      .default(60_000),
     IMAGE_PROCESSING_CONCURRENCY: z.coerce
       .number()
       .int()

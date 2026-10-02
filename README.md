@@ -8,7 +8,7 @@
 
 - Resize, crop, rotate, blur, sharpen, watermark, grayscale, and convert to JPEG, PNG, WebP, or AVIF.
 - Transform uploaded images or public remote URLs; strip metadata from output.
-- Disk cache with TTL, size-bounded LRU eviction, and `X-Cache` headers.
+- Disk cache with TTL, size-bounded LRU eviction, request coalescing, and `X-Cache` / ETag headers.
 - Optional Redis-backed batch jobs that return ZIP downloads.
 - SSRF defenses, signed URLs, input and output limits, and bounded processing concurrency.
 - Optional rembg background removal plugin.
@@ -50,6 +50,26 @@ curl -L 'http://localhost:3000/v1/img/w_400,h_300,fit_cover,f_webp/https://examp
 
 Remote images must resolve to public IP addresses. See [Security](#security) before exposing the API to untrusted clients.
 
+Remote transform cache keys combine the normalized source URL, canonical operation chain, and output format. Concurrent identical misses share one fetch and transform. Responses include `X-Cache: HIT|MISS`, a content-based `ETag`, and `Cache-Control`.
+
+Send the ETag from the first response in `If-None-Match` to get `304 Not Modified` when the cached image is unchanged:
+
+```sh
+curl -i -H 'If-None-Match: "<etag-from-first-response>"' \
+  'http://localhost:3000/v1/img/w_400,f_webp/https://example.com/photo.jpg'
+```
+
+### Sign transform URLs
+
+Set the same `SIGNING_SECRET` on the service and when creating a signature. The helper accepts a complete `/v1/img/:ops/*src` URL; `--expires-in` adds an optional expiry in seconds.
+
+```sh
+export SIGNING_SECRET='replace-with-a-long-random-secret'
+npm run sign -- 'http://localhost:3000/v1/img/w_400,f_webp/https://example.com/photo.jpg' --expires-in 3600
+```
+
+The command prints the signed URL with `sig` and `expires` query parameters. Use that URL as usual; altered operations, source URLs, or expired signatures are rejected with `403`.
+
 ## Benchmarks
 
 No benchmark results are published yet. Performance depends on the image, operation chain, hardware, and concurrency settings. A future benchmark will include its dataset, environment, and reproducible commands.
@@ -78,33 +98,37 @@ Choose based on your runtime, deployment model, and required transforms. This pr
 | `GET /health`, `GET /ready` | Liveness and readiness checks                        |
 | `GET /docs`                 | OpenAPI documentation and Swagger UI                 |
 
+For the remote transform endpoint, OpenAPI documents `sig`, `expires`, `If-None-Match`, and the `X-Cache`, `ETag`, and `Cache-Control` response headers.
+
 For URL transforms, operation tokens include `w`, `h`, `fit`, `rot`, `blur`, `sharp`, `gray_1`, `wm`, `f`, and `q`. Multipart requests accept a JSON `ops` array. See the examples above and [Swagger UI](http://localhost:3000/docs) for request schemas.
 
 ## Configuration
 
 All settings are environment variables validated at startup. See [.env.example](.env.example) for the full list.
 
-| Variable                       | Default                            | Purpose                                        |
-| ------------------------------ | ---------------------------------- | ---------------------------------------------- |
-| `MAX_UPLOAD_BYTES`             | `20971520`                         | Maximum input size in bytes                    |
-| `MAX_INPUT_PIXELS`             | `40000000`                         | Decompression-bomb pixel limit                 |
-| `MAX_OUTPUT_DIMENSION`         | `4096`                             | Maximum output width or height                 |
-| `CONCURRENCY_LIMIT`            | `8`                                | Maximum simultaneous requests                  |
-| `IMAGE_PROCESSING_CONCURRENCY` | `2`                                | Concurrent image and plugin operations         |
-| `ALLOWED_HOSTS`                | unset                              | Optional comma-separated remote host allowlist |
-| `SIGNING_SECRET`               | unset                              | Require signed remote transform URLs           |
-| `CACHE_MAX_SIZE_BYTES`         | `536870912`                        | Maximum disk cache size                        |
-| `QUEUE_ENABLED` / `REDIS_URL`  | `false` / `redis://127.0.0.1:6379` | Enable Redis-backed batch jobs                 |
-| `REMOVE_BACKGROUND_ENABLED`    | `false`                            | Enable the optional rembg plugin               |
+| Variable                          | Default                            | Purpose                                            |
+| --------------------------------- | ---------------------------------- | -------------------------------------------------- |
+| `MAX_UPLOAD_BYTES`                | `20971520`                         | Maximum input size in bytes                        |
+| `MAX_INPUT_PIXELS`                | `40000000`                         | Decompression-bomb pixel limit                     |
+| `MAX_OUTPUT_DIMENSION`            | `4096`                             | Maximum output width or height                     |
+| `CONCURRENCY_LIMIT`               | `8`                                | Maximum simultaneous requests                      |
+| `REMOTE_TRANSFORM_RATE_LIMIT`     | `60`                               | Remote transforms allowed per IP per window        |
+| `REMOTE_TRANSFORM_RATE_WINDOW_MS` | `60000`                            | Remote transform rate-limit window in milliseconds |
+| `IMAGE_PROCESSING_CONCURRENCY`    | `2`                                | Concurrent image and plugin operations             |
+| `ALLOWED_HOSTS`                   | unset                              | Optional comma-separated remote host allowlist     |
+| `SIGNING_SECRET`                  | unset                              | Require signed remote transform URLs               |
+| `CACHE_MAX_SIZE_BYTES`            | `536870912`                        | Maximum disk cache size                            |
+| `QUEUE_ENABLED` / `REDIS_URL`     | `false` / `redis://127.0.0.1:6379` | Enable Redis-backed batch jobs                     |
+| `REMOVE_BACKGROUND_ENABLED`       | `false`                            | Enable the optional rembg plugin                   |
 
 ## Security
 
-Remote fetches use HTTP(S), reject non-public IP ranges, pin checked DNS results, and validate redirect targets. Optional `ALLOWED_HOSTS` narrows remote sources further. Uploads are checked by file signature and bounded by byte and pixel limits. Keep the service behind trusted access controls; use `SIGNING_SECRET` and TLS when clients can request remote transforms. See [SECURITY.md](SECURITY.md).
+Remote fetches use HTTP(S), reject non-public IP ranges, pin checked DNS results, and validate redirect targets. Optional `ALLOWED_HOSTS` narrows remote sources further. URL transforms are rate limited per client IP; keep Fastify proxy trust disabled unless the proxy chain is configured safely. Uploads are checked by file signature and bounded by byte and pixel limits. Keep the service behind trusted access controls; use `SIGNING_SECRET` and TLS when clients can request remote transforms. See [SECURITY.md](SECURITY.md).
 
 ## Roadmap
 
 - S3-compatible storage adapter
-- Authentication and per-client rate limits
+- Authentication and per-client quotas
 - Metrics and tracing
 - More formats and animation controls
 - Reproducible published benchmarks

@@ -4,7 +4,13 @@ import {
   isPublicIp,
   resolvePublicAddresses,
 } from "../../src/security/ssrf.js";
-import { signPath, verifySignature } from "../../src/security/signing.js";
+import {
+  createTransformSignature,
+  signPath,
+  signTransformUrl,
+  verifySignature,
+  verifyTransformSignature,
+} from "../../src/security/signing.js";
 
 describe("SSRF IP filtering", () => {
   it.each([
@@ -80,5 +86,76 @@ describe("signed URLs", () => {
     ).toBe(true);
     expect(verifySignature("other", signature, "test-secret")).toBe(false);
     expect(verifySignature("path", undefined, "test-secret")).toBe(false);
+  });
+
+  it("signs transform URLs with an optional expiry and validates the signature", () => {
+    const url = signTransformUrl(
+      "https://images.example/v1/img/w_400,f_webp/https://source.example/a.jpg",
+      "test-secret",
+      "2000000000",
+    );
+    const signed = new URL(url);
+    const signature = signed.searchParams.get("sig") ?? undefined;
+    expect(signature).toBeDefined();
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "w_400,f_webp",
+        "2000000000",
+        signature,
+        "test-secret",
+        1_900_000_000_000,
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects tampered URLs and expired signatures", () => {
+    const signature = createTransformSignature(
+      "https://source.example/a.jpg",
+      "w_400",
+      "1000",
+      "test-secret",
+    );
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "w_800",
+        "1000",
+        signature,
+        "test-secret",
+        1_000_000,
+      ),
+    ).toBe(false);
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "w_400",
+        "1000",
+        signature,
+        "test-secret",
+        1_001_000,
+      ),
+    ).toBe(false);
+  });
+
+  it("allows unsigned requests only when signing is disabled", () => {
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "w_400",
+        undefined,
+        undefined,
+        undefined,
+      ),
+    ).toBe(true);
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "w_400",
+        "1000",
+        undefined,
+        undefined,
+      ),
+    ).toBe(false);
   });
 });

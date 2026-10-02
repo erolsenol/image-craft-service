@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { config as defaultConfig } from "../config/index.js";
 import multipart from "@fastify/multipart";
+import rateLimit from "@fastify/rate-limit";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import type { AppConfig } from "../config/index.js";
@@ -16,12 +17,18 @@ import { BullMqBatchQueue } from "../jobs/bullmq-batch-queue.js";
 import { createPluginRegistry } from "../plugins/registry.js";
 import type { PluginRegistry } from "../plugins/interface.js";
 import { ConcurrencyLimiter } from "../security/concurrency.js";
+import { fetchRemoteImage } from "../security/ssrf.js";
+
+export interface AppDependencies {
+  remoteImageFetcher?: typeof fetchRemoteImage;
+}
 
 export async function createApp(
   config: AppConfig = defaultConfig,
   storage?: Storage,
   batchQueue?: BatchQueue,
   plugins?: PluginRegistry,
+  dependencies: AppDependencies = {},
 ) {
   const app = Fastify({
     logger: { level: config.NODE_ENV === "development" ? "debug" : "info" },
@@ -61,7 +68,11 @@ export async function createApp(
           : 500;
     const status = statusCode >= 400 && statusCode < 500 ? statusCode : 500;
     const message =
-      error instanceof AppError ? error.message : "Request failed";
+      error instanceof AppError
+        ? error.message
+        : status === 429
+          ? "Rate limit exceeded"
+          : "Request failed";
     return reply
       .code(status)
       .send({ error: status === 500 ? "Internal server error" : message });
@@ -69,11 +80,16 @@ export async function createApp(
   await app.register(multipart, {
     limits: { fileSize: config.MAX_UPLOAD_BYTES, files: 1, fields: 1 },
   });
+  await app.register(rateLimit, {
+    global: false,
+    max: config.REMOTE_TRANSFORM_RATE_LIMIT,
+    timeWindow: config.REMOTE_TRANSFORM_RATE_WINDOW_MS,
+  });
   await app.register(swagger, {
     openapi: {
       info: {
         title: "Image Craft Service",
-        version: "0.1.2",
+        version: "0.2.0",
         description: "Self-hosted image processing HTTP API",
       },
       servers: [{ url: "/" }],
@@ -88,6 +104,9 @@ export async function createApp(
     storage: activeStorage,
     plugins: activePlugins,
     processingLimiter,
+    ...(dependencies.remoteImageFetcher
+      ? { remoteImageFetcher: dependencies.remoteImageFetcher }
+      : {}),
   });
   await app.register(batchRoutes, {
     config,
