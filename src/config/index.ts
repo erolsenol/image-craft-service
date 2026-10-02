@@ -36,6 +36,22 @@ const envSchema = z.object({
   BATCH_MAX_ITEMS: z.coerce.number().int().positive().max(100).default(20),
   BATCH_CONCURRENCY: z.coerce.number().int().positive().max(32).default(1),
   BATCH_RESULT_TTL_SECONDS: z.coerce.number().int().positive().default(86400),
+  REMOVE_BACKGROUND_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+  REMBG_URL: z
+    .string()
+    .url()
+    .default("http://rembg:7000")
+    .refine((value) => {
+      const url = new URL(value);
+      return (
+        ["http:", "https:"].includes(url.protocol) &&
+        !url.username &&
+        !url.password
+      );
+    }, "REMBG_URL must be an HTTP(S) URL without credentials"),
 });
 
 export const config = envSchema.parse(process.env);

@@ -2,7 +2,9 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { AppConfig } from "../../config/index.js";
 import { AppError } from "../../core/errors.js";
-import { transformImage } from "../../core/engine.js";
+import { runImageOperations } from "../../plugins/run-operations.js";
+import { createPluginRegistry } from "../../plugins/registry.js";
+import type { PluginRegistry } from "../../plugins/interface.js";
 import { fetchRemoteImage } from "../../security/ssrf.js";
 import { verifySignature } from "../../security/signing.js";
 import { validateImage } from "../../security/limits.js";
@@ -13,9 +15,10 @@ import { operationsSchema, type Operation } from "../schemas/operations.js";
 const jsonOpsSchema = z.object({ ops: operationsSchema });
 export async function transformRoutes(
   app: FastifyInstance,
-  options: { config: AppConfig; storage: Storage },
+  options: { config: AppConfig; storage: Storage; plugins?: PluginRegistry },
 ): Promise<void> {
   const { config, storage } = options;
+  const plugins = options.plugins ?? createPluginRegistry(config);
   app.addSchema({
     $id: "Error",
     type: "object",
@@ -79,9 +82,10 @@ export async function transformRoutes(
       if (!parsed.success)
         return reply.code(400).send({ error: "Invalid operations" });
       await validateImage(image, config.MAX_INPUT_PIXELS);
-      const result = await transformImage(
+      const result = await runImageOperations(
         image,
         parsed.data,
+        plugins,
         config.MAX_INPUT_PIXELS,
         config.MAX_OUTPUT_DIMENSION,
       );
@@ -226,9 +230,10 @@ export async function transformRoutes(
           maxBytes: config.MAX_UPLOAD_BYTES,
         });
         await validateImage(remote.body, config.MAX_INPUT_PIXELS);
-        const result = await transformImage(
+        const result = await runImageOperations(
           remote.body,
           parsedOps,
+          plugins,
           config.MAX_INPUT_PIXELS,
           config.MAX_OUTPUT_DIMENSION,
         );

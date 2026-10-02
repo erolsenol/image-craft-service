@@ -1,0 +1,73 @@
+import sharp from "sharp";
+import type { CoreOperation, Operation } from "../api/schemas/operations.js";
+import { AppError } from "../core/errors.js";
+import { transformImage, type TransformResult } from "../core/engine.js";
+import { validateImage } from "../security/limits.js";
+import type { PluginRegistry } from "./interface.js";
+
+export async function runImageOperations(
+  input: Buffer,
+  operations: readonly Operation[],
+  plugins: PluginRegistry,
+  maxPixels: number,
+  maxDimension: number,
+): Promise<TransformResult> {
+  let buffer = input;
+  let pluginResult: TransformResult | undefined;
+  let pending: CoreOperation[] = [];
+
+  for (const operation of operations) {
+    if (operation.op !== "plugin") {
+      pending.push(operation);
+      continue;
+    }
+
+    const plugin = plugins.get(operation.name);
+    if (!plugin)
+      throw new AppError(
+        `Plugin "${operation.name}" is disabled or unavailable`,
+        400,
+      );
+
+    if (pending.length > 0) {
+      const prepared = await transformImage(
+        buffer,
+        [...pending, { op: "format", format: "png" }],
+        maxPixels,
+        maxDimension,
+      );
+      buffer = prepared.buffer;
+      pending = [];
+    }
+
+    buffer = await plugin.run(buffer, operation.options);
+    const contentType = await validateImage(buffer, maxPixels);
+    const metadata = await sharp(buffer, {
+      limitInputPixels: maxPixels,
+    }).metadata();
+    if (!metadata.width || !metadata.height)
+      throw new AppError("Plugin returned invalid image data", 502);
+    if (metadata.width > maxDimension || metadata.height > maxDimension)
+      throw new AppError("Plugin output dimensions exceed limit", 413);
+    pluginResult = {
+      buffer,
+      contentType,
+      width: metadata.width,
+      height: metadata.height,
+    };
+  }
+
+  if (pending.length > 0 || !pluginResult) {
+    const postPluginOperations =
+      pluginResult && !pending.some((operation) => operation.op === "format")
+        ? [...pending, { op: "format" as const, format: "png" as const }]
+        : pending;
+    return transformImage(
+      buffer,
+      postPluginOperations,
+      maxPixels,
+      maxDimension,
+    );
+  }
+  return pluginResult;
+}

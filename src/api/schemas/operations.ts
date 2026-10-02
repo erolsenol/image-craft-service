@@ -49,6 +49,11 @@ export const operationSchema = z.discriminatedUnion("op", [
     format: z.enum(["jpeg", "png", "webp", "avif"]),
     quality: z.number().int().min(1).max(100).optional(),
   }),
+  z.object({
+    op: z.literal("plugin"),
+    name: z.string().min(1).max(100),
+    options: z.unknown().optional(),
+  }),
 ]);
 export const operationsSchema = z
   .array(operationSchema)
@@ -69,3 +74,5 @@ export const operationsSchema = z
     });
   });
 export type Operation = z.infer<typeof operationSchema>;
+export type PluginOperation = Extract<Operation, { op: "plugin" }>;
+export type CoreOperation = Exclude<Operation, PluginOperation>;

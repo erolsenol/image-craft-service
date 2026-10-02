@@ -10,6 +10,8 @@ services:
       CACHE_DIR: /var/cache/image-craft
       QUEUE_ENABLED: ${QUEUE_ENABLED:-false}
       REDIS_URL: redis://redis:6379
+      REMOVE_BACKGROUND_ENABLED: ${REMOVE_BACKGROUND_ENABLED:-false}
+      REMBG_URL: http://rembg:7000
     volumes:
       - image-cache:/var/cache/image-craft
     restart: unless-stopped
@@ -30,6 +32,15 @@ services:
       retries: 10
     restart: unless-stopped
 
+  rembg:
+    image: danielgatis/rembg:2.0.85
+    profiles: [plugins]
+    command: ["s", "--host", "0.0.0.0", "--port", "7000", "--no-ui"]
+    volumes:
+      - rembg-models:/root/.rembg
+    restart: unless-stopped
+
 volumes:
   image-cache:
   redis-data:
+  rembg-models:
