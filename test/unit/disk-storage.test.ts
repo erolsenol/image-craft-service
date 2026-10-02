@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { utimes } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DiskStorage } from "../../src/storage/disk-storage.js";
 
@@ -41,7 +43,12 @@ describe("DiskStorage", () => {
     await storage.set("old", value, 60);
     await storage.set("recent", value, 60);
     expect(await storage.get("old")).toEqual(value);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    const recentPath = join(
+      directory,
+      `${createHash("sha256").update("recent").digest("hex")}.entry`,
+    );
+    const oldDate = new Date("2000-01-01T00:00:00.000Z");
+    await utimes(recentPath, oldDate, oldDate);
     await storage.set("new", value, 60);
 
     expect(await storage.get("old")).toEqual(value);
