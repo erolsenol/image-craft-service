@@ -42,11 +42,7 @@ const cases: Array<{
   { name: "sharpen", operation: { op: "sharpen", sigma: 1.4 } },
   { name: "grayscale", operation: { op: "grayscale" } },
   {
-    name: "text-watermark",
-    operation: { op: "watermark", text: "demo", opacity: 0.7 },
-  },
-  {
-    name: "image-watermark",
+    name: "watermark",
     operation: { op: "watermark", image: "", gravity: "center", opacity: 0.5 },
   },
   {
@@ -100,7 +96,7 @@ beforeAll(async () => {
   })
     .png()
     .toBuffer();
-  cases.find(({ name }) => name === "image-watermark")!.operation = {
+  cases.find(({ name }) => name === "watermark")!.operation = {
     op: "watermark",
     image: watermark.toString("base64url"),
     gravity: "center",

@@ -34,6 +34,25 @@ describe("transformImage", () => {
     ).rejects.toThrow("Output dimensions exceed limit");
   });
 
+  it("renders text watermarks", async () => {
+    const input = await sharp({
+      create: { width: 64, height: 48, channels: 3, background: "#808080" },
+    })
+      .png()
+      .toBuffer();
+    const result = await transformImage(
+      input,
+      [{ op: "watermark", text: "demo", opacity: 0.7 }],
+      10_000,
+      100,
+    );
+    const before = await sharp(input).raw().toBuffer();
+    const after = await sharp(result.buffer).raw().toBuffer();
+    expect(after.some((channel, index) => channel !== before[index])).toBe(
+      true,
+    );
+  });
+
   it("auto-orients EXIF images before operations and strips metadata", async () => {
     const input = await sharp({
       create: { width: 12, height: 8, channels: 3, background: "#f00" },
