@@ -93,7 +93,7 @@ export async function createApp(
       reply.header("Vary", "Origin");
       reply.header(
         "Access-Control-Expose-Headers",
-        "ETag, X-Cache, X-Request-Id",
+        "ETag, X-Cache, X-Request-Id, X-Image-Alt-Text, X-NSFW-Score",
       );
       if (request.method === "OPTIONS") {
         const requestedMethod =
@@ -184,7 +184,12 @@ export async function createApp(
         : typeof error === "object" && error !== null && "statusCode" in error
           ? Number(error.statusCode)
           : 500;
-    const status = statusCode >= 400 && statusCode < 500 ? statusCode : 500;
+    const status =
+      error instanceof AppError && statusCode === 503
+        ? 503
+        : statusCode >= 400 && statusCode < 500
+          ? statusCode
+          : 500;
     request.log.error(
       {
         errorName: error instanceof Error ? error.name : "UnknownError",
@@ -272,7 +277,7 @@ export async function createApp(
     openapi: {
       info: {
         title: "Image Craft Service",
-        version: "0.7.0",
+        version: "0.8.0",
         description: "Self-hosted image processing HTTP API",
       },
       servers: [{ url: "/" }],

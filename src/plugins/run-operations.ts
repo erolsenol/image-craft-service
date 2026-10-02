@@ -1,4 +1,4 @@
-import sharp from "sharp";
+import sharp, { type Metadata } from "sharp";
 import type { CoreOperation, Operation } from "../api/schemas/operations.js";
 import { AppError } from "../core/errors.js";
 import { transformImage, type TransformResult } from "../core/engine.js";
@@ -15,6 +15,7 @@ export async function runImageOperations(
   limiter?: ConcurrencyLimiter,
   accept?: string,
   observeOperation?: (operation: string, durationSeconds: number) => void,
+  requestId = "unknown",
 ): Promise<TransformResult> {
   if (limiter)
     return limiter.run(() =>
@@ -26,6 +27,7 @@ export async function runImageOperations(
         maxDimension,
         accept,
         observeOperation,
+        requestId,
       ),
     );
   return runImageOperationsUnbounded(
@@ -36,6 +38,7 @@ export async function runImageOperations(
     maxDimension,
     accept,
     observeOperation,
+    requestId,
   );
 }
 
@@ -47,10 +50,12 @@ async function runImageOperationsUnbounded(
   maxDimension: number,
   accept?: string,
   observeOperation?: (operation: string, durationSeconds: number) => void,
+  requestId = "unknown",
 ): Promise<TransformResult> {
   await validateImage(input, maxPixels);
   let buffer = input;
   let pluginResult: TransformResult | undefined;
+  const pluginMetadata: Record<string, string | number | boolean> = {};
   let pending: CoreOperation[] = [];
 
   for (const operation of operations) {
@@ -79,11 +84,20 @@ async function runImageOperationsUnbounded(
       pending = [];
     }
 
-    buffer = await plugin.run(buffer, operation.options);
-    const contentType = await validateImage(buffer, maxPixels);
-    const metadata = await sharp(buffer, {
-      limitInputPixels: maxPixels,
-    }).metadata();
+    buffer = await plugin.run(buffer, operation.options, {
+      requestId,
+      metadata: pluginMetadata,
+    });
+    let contentType: string;
+    let metadata: Metadata;
+    try {
+      contentType = await validateImage(buffer, maxPixels);
+      metadata = await sharp(buffer, {
+        limitInputPixels: maxPixels,
+      }).metadata();
+    } catch {
+      throw new AppError("Plugin returned invalid image data", 503);
+    }
     if (!metadata.width || !metadata.height)
       throw new AppError("Plugin returned invalid image data", 502);
     if (metadata.width > maxDimension || metadata.height > maxDimension)
@@ -93,6 +107,7 @@ async function runImageOperationsUnbounded(
       contentType,
       width: metadata.width,
       height: metadata.height,
+      metadata: pluginMetadata,
     };
   }
 
@@ -101,7 +116,7 @@ async function runImageOperationsUnbounded(
       pluginResult && !pending.some((operation) => operation.op === "format")
         ? [...pending, { op: "format" as const, format: "png" as const }]
         : pending;
-    return transformImage(
+    const result = await transformImage(
       buffer,
       postPluginOperations,
       maxPixels,
@@ -109,6 +124,9 @@ async function runImageOperationsUnbounded(
       accept,
       observeOperation,
     );
+    if (Object.keys(pluginMetadata).length > 0)
+      result.metadata = pluginMetadata;
+    return result;
   }
   return pluginResult;
 }

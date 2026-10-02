@@ -274,7 +274,7 @@ export const envSchema = z
     REMBG_URL: z
       .string()
       .url()
-      .default("http://rembg:7000")
+      .default("http://rembg:8000")
       .refine((value) => {
         const url = new URL(value);
         return (
@@ -283,8 +283,56 @@ export const envSchema = z
           !url.password
         );
       }, "REMBG_URL must be an HTTP(S) URL without credentials"),
+    UPSCALE_ENABLED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    UPSCALE_URL: z
+      .string()
+      .url()
+      .default("http://realesrgan:8000")
+      .refine(
+        isCredentialFreeHttpUrl,
+        "UPSCALE_URL must be an HTTP(S) URL without credentials",
+      ),
+    AUTO_ALT_TEXT_ENABLED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    AUTO_ALT_TEXT_URL: z
+      .string()
+      .url()
+      .default("http://vision-worker:8000")
+      .refine(
+        isCredentialFreeHttpUrl,
+        "AUTO_ALT_TEXT_URL must be an HTTP(S) URL without credentials",
+      ),
+    NSFW_CHECK_ENABLED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    NSFW_CHECK_URL: z
+      .string()
+      .url()
+      .default("http://nsfw-worker:8000")
+      .refine(
+        isCredentialFreeHttpUrl,
+        "NSFW_CHECK_URL must be an HTTP(S) URL without credentials",
+      ),
+    AI_PLUGIN_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(300_000)
+      .default(20_000),
   })
   .superRefine((settings, context) => {
+    if (settings.AI_PLUGIN_TIMEOUT_MS > settings.REQUEST_TIMEOUT_MS)
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["AI_PLUGIN_TIMEOUT_MS"],
+        message: "AI_PLUGIN_TIMEOUT_MS cannot exceed REQUEST_TIMEOUT_MS",
+      });
     if (settings.STORAGE_DRIVER === "s3" && !settings.S3_BUCKET)
       context.addIssue({
         code: z.ZodIssueCode.custom,

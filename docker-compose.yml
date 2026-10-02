@@ -22,7 +22,14 @@ services:
       OTEL_ENABLED: ${OTEL_ENABLED:-false}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318}
       REMOVE_BACKGROUND_ENABLED: ${REMOVE_BACKGROUND_ENABLED:-false}
-      REMBG_URL: http://rembg:7000
+      REMBG_URL: http://rembg:8000
+      UPSCALE_ENABLED: ${UPSCALE_ENABLED:-false}
+      UPSCALE_URL: http://realesrgan-worker:8000
+      AUTO_ALT_TEXT_ENABLED: ${AUTO_ALT_TEXT_ENABLED:-false}
+      AUTO_ALT_TEXT_URL: http://vision-worker:8000
+      NSFW_CHECK_ENABLED: ${NSFW_CHECK_ENABLED:-false}
+      NSFW_CHECK_URL: http://nsfw-worker:8000
+      AI_PLUGIN_TIMEOUT_MS: ${AI_PLUGIN_TIMEOUT_MS:-20000}
     volumes:
       - image-cache:/var/cache/image-craft
     restart: unless-stopped
@@ -46,11 +53,54 @@ services:
     restart: unless-stopped
 
   rembg:
+    build: ./workers/ai-http-worker
+    profiles: [ai, plugins]
+    environment:
+      AI_WORKER_MODE: remove-background
+      AI_BACKEND_URL: http://rembg-model:7000
+      AI_BACKEND_HEALTH_URL: http://rembg-model:7000/openapi.json
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-20971520}
+    depends_on:
+      rembg-model:
+        condition: service_started
+    restart: unless-stopped
+
+  rembg-model:
     image: danielgatis/rembg:2.0.85
-    profiles: [plugins]
+    profiles: [ai, plugins]
     command: ["s", "--host", "0.0.0.0", "--port", "7000", "--no-ui"]
     volumes:
       - rembg-models:/root/.rembg
+    restart: unless-stopped
+
+  realesrgan-worker:
+    build: ./workers/ai-http-worker
+    profiles: [ai]
+    environment:
+      AI_WORKER_MODE: upscale
+      AI_BACKEND_URL: ${REALESRGAN_BACKEND_URL:-}
+      AI_BACKEND_HEALTH_URL: ${REALESRGAN_HEALTH_URL:-}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-20971520}
+    restart: unless-stopped
+
+  vision-worker:
+    build: ./workers/ai-http-worker
+    profiles: [ai]
+    environment:
+      AI_WORKER_MODE: auto-alt-text
+      AI_BACKEND_URL: ${VISION_MODEL_URL:-}
+      AI_BACKEND_HEALTH_URL: ${VISION_MODEL_HEALTH_URL:-}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-20971520}
+    restart: unless-stopped
+
+  nsfw-worker:
+    build: ./workers/ai-http-worker
+    profiles: [ai]
+    environment:
+      AI_WORKER_MODE: nsfw-check
+      AI_BACKEND_URL: ${NSFW_MODEL_URL:-}
+      AI_BACKEND_HEALTH_URL: ${NSFW_MODEL_HEALTH_URL:-}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-20971520}
     restart: unless-stopped
 
   minio:

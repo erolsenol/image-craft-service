@@ -44,6 +44,18 @@ describe("security-related configuration bounds", () => {
     expect(envSchema.safeParse({ MAX_OPS_CHAIN: 32 }).success).toBe(true);
   });
 
+  it("keeps AI plugin timeouts within the HTTP request timeout", () => {
+    expect(
+      envSchema.safeParse({
+        REQUEST_TIMEOUT_MS: 1000,
+        AI_PLUGIN_TIMEOUT_MS: 1001,
+      }).success,
+    ).toBe(false);
+    expect(envSchema.safeParse({ AI_PLUGIN_TIMEOUT_MS: 20_000 }).success).toBe(
+      true,
+    );
+  });
+
   it("accepts hashed API keys with optional known scopes", () => {
     expect(
       envSchema.safeParse({

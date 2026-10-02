@@ -40,6 +40,7 @@ export async function transformRoutes(
   const transformFlights = new SingleFlight<{
     buffer: Buffer;
     contentType: string;
+    metadata?: Record<string, string | number | boolean>;
   }>();
   app.addSchema({
     $id: "Error",
@@ -63,7 +64,8 @@ export async function transformRoutes(
             },
             ops: {
               type: "string",
-              description: "JSON array of image operations",
+              description:
+                "JSON operation array. Optional plugins: remove-background, upscale, auto-alt-text, nsfw-check.",
             },
           },
         },
@@ -72,12 +74,20 @@ export async function transformRoutes(
             type: "string",
             format: "binary",
             description: "Transformed image",
+            headers: {
+              "X-Image-Alt-Text": { schema: { type: "string" } },
+              "X-NSFW-Score": {
+                schema: { type: "number", minimum: 0, maximum: 1 },
+              },
+            },
           },
           400: {
             type: "object",
             required: ["error", "code"],
             properties: { error: { type: "string" }, code: { type: "string" } },
           },
+          422: { $ref: "Error#" },
+          503: { $ref: "Error#" },
         },
       },
     },
@@ -141,8 +151,10 @@ export async function transformRoutes(
             request.headers.accept,
             (operation, seconds) =>
               metrics?.recordOperation(operation, seconds),
+            request.id,
           ),
       );
+      setPluginMetadataHeaders(reply, result.metadata);
       return reply.type(result.contentType).send(result.buffer);
     },
   );
@@ -259,6 +271,10 @@ export async function transformRoutes(
               ETag: { schema: { type: "string" } },
               "Cache-Control": { schema: { type: "string" } },
               Vary: { schema: { type: "string" } },
+              "X-Image-Alt-Text": { schema: { type: "string" } },
+              "X-NSFW-Score": {
+                schema: { type: "number", minimum: 0, maximum: 1 },
+              },
             },
           },
           304: {
@@ -269,9 +285,15 @@ export async function transformRoutes(
               ETag: { schema: { type: "string" } },
               "Cache-Control": { schema: { type: "string" } },
               Vary: { schema: { type: "string" } },
+              "X-Image-Alt-Text": { schema: { type: "string" } },
+              "X-NSFW-Score": {
+                schema: { type: "number", minimum: 0, maximum: 1 },
+              },
             },
           },
           403: { $ref: "Error#" },
+          422: { $ref: "Error#" },
+          503: { $ref: "Error#" },
           429: {
             $ref: "Error#",
             description: "Remote transform rate limit exceeded",
@@ -357,9 +379,16 @@ export async function transformRoutes(
         "Cache-Control",
         `public, max-age=${config.CACHE_MAX_AGE_SECONDS}`,
       );
-      let output = await withSpan("image.cache.get", { "cache.key": key }, () =>
-        storage.get(key),
+      const metadataPlugin = parsedOps.some(
+        (operation) =>
+          operation.op === "plugin" &&
+          ["auto-alt-text", "nsfw-check"].includes(operation.name),
       );
+      let output = metadataPlugin
+        ? undefined
+        : await withSpan("image.cache.get", { "cache.key": key }, () =>
+            storage.get(key),
+          );
       const wasCacheHit = output !== undefined;
       metrics?.recordCacheResult(wasCacheHit ? "HIT" : "MISS");
       reply.header("X-Cache", wasCacheHit ? "HIT" : "MISS");
@@ -400,15 +429,22 @@ export async function transformRoutes(
                 request.headers.accept,
                 (operation, seconds) =>
                   metrics?.recordOperation(operation, seconds),
+                request.id,
               ),
           );
-          await withSpan("image.cache.set", { "cache.key": key }, () =>
-            storage.set(key, result.buffer, config.CACHE_MAX_AGE_SECONDS),
-          );
-          return { buffer: result.buffer, contentType: result.contentType };
+          if (!metadataPlugin)
+            await withSpan("image.cache.set", { "cache.key": key }, () =>
+              storage.set(key, result.buffer, config.CACHE_MAX_AGE_SECONDS),
+            );
+          return {
+            buffer: result.buffer,
+            contentType: result.contentType,
+            ...(result.metadata ? { metadata: result.metadata } : {}),
+          };
         });
         output = transformed.buffer;
         contentType = transformed.contentType;
+        setPluginMetadataHeaders(reply, transformed.metadata);
       }
       if (outputFormat === "original") {
         const metadata = await sharp(output).metadata();
@@ -514,6 +550,16 @@ export async function transformRoutes(
       return processingLimiter ? processingLimiter.run(makeHash) : makeHash();
     },
   );
+}
+
+function setPluginMetadataHeaders(
+  reply: import("fastify").FastifyReply,
+  metadata?: Record<string, string | number | boolean>,
+): void {
+  if (typeof metadata?.altText === "string")
+    reply.header("X-Image-Alt-Text", encodeURIComponent(metadata.altText));
+  if (typeof metadata?.nsfwScore === "number")
+    reply.header("X-NSFW-Score", String(metadata.nsfwScore));
 }
 
 function contentTypeFor(format: string): string {

@@ -6,21 +6,23 @@ import {
   type HttpWorkerOptions,
 } from "./http-worker.js";
 
-const optionsSchema = z.object({}).strict();
-
-export function createRemoveBackgroundPlugin(
+const optionsSchema = z
+  .object({ scale: z.union([z.literal(2), z.literal(4)]).default(2) })
+  .strict();
+export function createUpscalePlugin(
   worker: HttpWorkerOptions,
 ): ImagePlugin<typeof optionsSchema> {
   return {
-    name: "remove-background",
+    name: "upscale",
     version: "1.0.0",
     optionsSchema,
-    async run(buffer, _options, ctx) {
+    async run(input, options, ctx) {
       const form = new FormData();
-      form.set("file", new Blob([new Uint8Array(buffer)]), "input.png");
+      form.set("file", new Blob([new Uint8Array(input)]), "input.png");
+      form.set("scale", String(options.scale));
       const response = await postWorker(
         worker,
-        "/api/remove",
+        "/api/upscale",
         form,
         {},
         ctx.signal,

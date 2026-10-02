@@ -1,0 +1,2 @@
+# Helm templates contain Go template syntax and are not plain YAML.
+deploy/helm/**/templates/**

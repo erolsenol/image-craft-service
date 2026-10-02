@@ -6,6 +6,7 @@ import type { AppConfig } from "../../src/config/index.js";
 import { createCacheKey } from "../../src/storage/cache-key.js";
 import type { Storage, StorageStats } from "../../src/storage/storage.js";
 import type { PluginRegistry } from "../../src/plugins/interface.js";
+import { AppError } from "../../src/core/errors.js";
 import { signTransformUrl } from "../../src/security/signing.js";
 import { hashApiKey } from "../../src/security/api-keys.js";
 import type {
@@ -61,6 +62,13 @@ const testConfig: AppConfig = {
   WEBHOOK_SIGNING_SECRET: undefined,
   REMOVE_BACKGROUND_ENABLED: false,
   REMBG_URL: "http://127.0.0.1:7000",
+  UPSCALE_ENABLED: false,
+  UPSCALE_URL: "http://127.0.0.1:8000",
+  AUTO_ALT_TEXT_ENABLED: false,
+  AUTO_ALT_TEXT_URL: "http://127.0.0.1:8000",
+  NSFW_CHECK_ENABLED: false,
+  NSFW_CHECK_URL: "http://127.0.0.1:8000",
+  AI_PLUGIN_TIMEOUT_MS: 1000,
 };
 function multipart(
   image: Buffer,
@@ -201,8 +209,24 @@ describe("HTTP API", () => {
         "test-pass-through",
         {
           name: "test-pass-through",
-          async run(buffer) {
+          version: "1.0.0",
+          timeoutMs: 1000,
+          maxBytes: 1024 * 1024,
+          async run(buffer, _options, context) {
+            context.metadata.altText = "fixture image 雪";
             return buffer;
+          },
+        },
+      ],
+      [
+        "test-worker-down",
+        {
+          name: "test-worker-down",
+          version: "1.0.0",
+          timeoutMs: 1000,
+          maxBytes: 1024 * 1024,
+          async run() {
+            throw new AppError("AI worker is unavailable", 503);
           },
         },
       ],
@@ -240,7 +264,7 @@ describe("HTTP API", () => {
     ).toBe("binary");
     expect(docs.json().paths).toHaveProperty("/v1/hash/{*}");
     expect(docs.json().paths).toHaveProperty("/metrics");
-    expect(docs.json().info.version).toBe("0.7.0");
+    expect(docs.json().info.version).toBe("0.8.0");
     expect(docs.json().paths["/v1/img/{ops}/{*}"]?.get?.parameters).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "sig", in: "query" }),
@@ -758,6 +782,24 @@ describe("HTTP API", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toContain("image/jpeg");
+    expect(response.headers["x-image-alt-text"]).toBe(
+      "fixture%20image%20%E9%9B%AA",
+    );
+  });
+
+  it("isolates an unavailable plugin to its request", async () => {
+    const server = await app;
+    const form = multipart(image, {
+      ops: '[{"op":"plugin","name":"test-worker-down","options":{}}]',
+    });
+    const failed = await server.inject({
+      method: "POST",
+      url: "/v1/transform",
+      headers: { "content-type": form.contentType },
+      payload: form.payload,
+    });
+    expect(failed.statusCode).toBe(503);
+    expect((await server.inject("/health")).statusCode).toBe(200);
   });
 
   it("keeps batch endpoints disabled unless a queue is configured", async () => {

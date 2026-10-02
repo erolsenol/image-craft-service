@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here.
 
+## [0.8.0] - 2026-10-03
+
+### Added
+
+- Versioned plugin contract with Zod option validation, duplicate-safe registration, isolated timeouts, request context, and bounded input/output sizes.
+- Optional HTTP workers for background removal, Real-ESRGAN upscaling, vision-based alt text, and NSFW scoring with configurable blocking thresholds.
+- `ai` Docker Compose profile and plugin author guide with a working example.
+- `X-Image-Alt-Text` and `X-NSFW-Score` response headers for analysis plugins; analysis outputs bypass the image cache.
+
 ## [0.7.0] - 2026-10-03
 
 ### Added

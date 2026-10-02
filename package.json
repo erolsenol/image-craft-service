@@ -1,6 +1,6 @@
 {
   "name": "image-craft-service",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Self-hosted image processing HTTP API",
   "license": "MIT",
   "type": "module",
@@ -65,6 +65,7 @@
   "files": [
     "dist/**",
     "README.md",
+    "docs/plugins.md",
     "src/plugins/README.md",
     "LICENSE",
     "CHANGELOG.md"

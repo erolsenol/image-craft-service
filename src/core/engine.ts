@@ -15,6 +15,7 @@ export interface TransformResult {
   contentType: string;
   width: number;
   height: number;
+  metadata?: Record<string, string | number | boolean>;
 }
 
 const contentTypes: Record<string, string> = {

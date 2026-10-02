@@ -38,3 +38,4 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: docker build -t image-craft-service:ci .
+      - run: docker build -t image-craft-ai-worker:ci ./workers/ai-http-worker
