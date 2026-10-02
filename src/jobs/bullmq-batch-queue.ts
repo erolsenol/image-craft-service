@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Queue, Worker, type Job } from "bullmq";
-import type { Readable } from "node:stream";
 import { Redis } from "ioredis";
 import type { FastifyBaseLogger } from "fastify";
 import type { AppConfig } from "../config/index.js";
@@ -166,15 +165,10 @@ export class BullMqBatchQueue implements BatchQueue {
       return undefined;
     const result = job.returnvalue;
     if (!result || !Array.isArray(result.files)) return undefined;
-    const files: Array<{ name: string; stream: Readable }> = [];
-    for (const file of result.files) {
-      const stream = await this.storage.getStream(file.storageKey);
-      if (!stream) {
-        for (const opened of files) opened.stream.destroy();
-        return undefined;
-      }
-      files.push({ name: file.name, stream });
-    }
+    const files = result.files.map((file) => ({
+      name: file.name,
+      open: () => this.storage.getStream(file.storageKey),
+    }));
     return createZipStream(
       files,
       result.errors,

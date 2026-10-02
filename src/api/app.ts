@@ -18,6 +18,7 @@ import { createPluginRegistry } from "../plugins/registry.js";
 import type { PluginRegistry } from "../plugins/interface.js";
 import { ConcurrencyLimiter } from "../security/concurrency.js";
 import { fetchRemoteImage } from "../security/ssrf.js";
+import { authenticateApiKey, requiredApiScope } from "../security/api-keys.js";
 
 export interface AppDependencies {
   remoteImageFetcher?: typeof fetchRemoteImage;
@@ -58,6 +59,102 @@ export async function createApp(
   app.addHook("onResponse", async (request) => {
     if (trackedRequests.delete(request)) active -= 1;
   });
+  app.addHook("onRequest", async (request, reply) => {
+    const origin = request.headers.origin;
+    if (origin !== undefined) {
+      const allowedOrigins = config.CORS_ORIGINS.split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+      if (!allowedOrigins.includes(origin))
+        return reply.code(403).send({ error: "Origin is not allowed" });
+      reply.header("Access-Control-Allow-Origin", origin);
+      reply.header("Vary", "Origin");
+      reply.header(
+        "Access-Control-Expose-Headers",
+        "ETag, X-Cache, X-Request-Id",
+      );
+      if (request.method === "OPTIONS") {
+        const requestedMethod =
+          request.headers["access-control-request-method"];
+        const methods = ["GET", "HEAD", "POST"];
+        if (
+          typeof requestedMethod !== "string" ||
+          !methods.includes(requestedMethod)
+        )
+          return reply.code(403).send({ error: "CORS method is not allowed" });
+        const allowedHeaders = new Set([
+          "authorization",
+          "content-type",
+          "if-none-match",
+          "x-api-key",
+          "x-request-id",
+        ]);
+        const requestedHeaders =
+          request.headers["access-control-request-headers"]
+            ?.split(",")
+            .map((header) => header.trim().toLowerCase())
+            .filter(Boolean) ?? [];
+        if (requestedHeaders.some((header) => !allowedHeaders.has(header)))
+          return reply.code(403).send({ error: "CORS header is not allowed" });
+        reply
+          .header("Access-Control-Allow-Methods", methods.join(", "))
+          .header(
+            "Access-Control-Allow-Headers",
+            [...allowedHeaders].join(", "),
+          )
+          .header("Access-Control-Max-Age", "600");
+        return reply.code(204).send();
+      }
+    } else if (request.method === "OPTIONS") {
+      return reply.code(403).send({ error: "CORS origin is required" });
+    }
+
+    if (!request.url.startsWith("/v1/")) return;
+    const apiKeyHeader = request.headers["x-api-key"];
+    const providedKey =
+      typeof apiKeyHeader === "string" ? apiKeyHeader : undefined;
+    const principal = authenticateApiKey(
+      providedKey,
+      request.ip,
+      config.API_KEYS,
+    );
+    if (!principal)
+      return reply.code(401).send({ error: "Valid API key required" });
+    const scope = requiredApiScope(request.url);
+    if (!principal.scopes.includes(scope))
+      return reply.code(403).send({ error: "API key scope is insufficient" });
+  });
+  app.addHook("onSend", async (request, reply, payload) => {
+    const vary = reply.getHeader("Vary");
+    const varyValues = (Array.isArray(vary) ? vary : [vary])
+      .filter((value): value is string => typeof value === "string")
+      .flatMap((value) => value.split(","))
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (
+      request.headers.origin !== undefined &&
+      config.CORS_ORIGINS.split(",")
+        .map((value) => value.trim())
+        .includes(request.headers.origin)
+    )
+      varyValues.push("Origin");
+    if (varyValues.length > 0)
+      reply.header("Vary", [...new Set(varyValues)].join(", "));
+    reply
+      .header("X-Content-Type-Options", "nosniff")
+      .header("X-Frame-Options", "DENY")
+      .header("Referrer-Policy", "no-referrer")
+      .header("X-DNS-Prefetch-Control", "off")
+      .header("X-Permitted-Cross-Domain-Policies", "none")
+      .header("Cross-Origin-Opener-Policy", "same-origin")
+      .header("Cross-Origin-Resource-Policy", "cross-origin")
+      .header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+      .header(
+        "Content-Security-Policy",
+        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+      );
+    return payload;
+  });
   app.setErrorHandler((error, _request, reply) => {
     app.log.error({ err: error }, "Request failed");
     const statusCode =
@@ -81,9 +178,17 @@ export async function createApp(
     limits: { fileSize: config.MAX_UPLOAD_BYTES, files: 1, fields: 1 },
   });
   await app.register(rateLimit, {
-    global: false,
-    max: config.REMOTE_TRANSFORM_RATE_LIMIT,
-    timeWindow: config.REMOTE_TRANSFORM_RATE_WINDOW_MS,
+    global: true,
+    max: config.API_RATE_LIMIT,
+    timeWindow: config.API_RATE_WINDOW_MS,
+    keyGenerator: (request) => {
+      const value = request.headers["x-api-key"];
+      const providedKey = typeof value === "string" ? value : undefined;
+      return (
+        authenticateApiKey(providedKey, request.ip, config.API_KEYS)?.id ??
+        `ip:${request.ip}`
+      );
+    },
   });
   await app.register(swagger, {
     transformObject: (document) => {
@@ -113,13 +218,24 @@ export async function createApp(
     openapi: {
       info: {
         title: "Image Craft Service",
-        version: "0.4.0",
+        version: "0.5.0",
         description: "Self-hosted image processing HTTP API",
       },
       servers: [{ url: "/" }],
+      components: {
+        securitySchemes: {
+          ApiKeyAuth: {
+            type: "apiKey",
+            in: "header",
+            name: "X-API-Key",
+          },
+        },
+      },
+      security: [{ ApiKeyAuth: [] }],
     },
   });
   await app.register(swaggerUi, { routePrefix: "/docs" });
+  app.options("/v1/*", async (_request, reply) => reply.code(204).send());
   await app.register(healthRoutes, {
     ...(activeQueue ? { queue: activeQueue } : {}),
   });

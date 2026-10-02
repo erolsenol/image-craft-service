@@ -12,6 +12,8 @@
 - Disk cache with TTL, size-bounded LRU eviction, request coalescing, and `X-Cache` / ETag headers.
 - Optional Redis-backed batch jobs with streamed ZIP downloads, per-item errors, retries, and per-client limits.
 - SSRF defenses, signed URLs, input and output limits, and bounded processing concurrency.
+- SHA-256 API key digests with optional route scopes, per-key request limits, exact-origin CORS, and browser security headers.
+- SVG uploads are rejected; image watermarks accept PNG only and responses are rasterized.
 - Optional rembg background removal plugin.
 
 ## Before and after
@@ -170,7 +172,9 @@ All settings are environment variables validated at startup. See [.env.example](
 | `SIGNING_SECRET`                                | unset                              | Require signed remote transform URLs                             |
 | `CACHE_MAX_SIZE_BYTES`                          | `536870912`                        | Maximum disk cache size                                          |
 | `QUEUE_ENABLED` / `REDIS_URL`                   | `false` / `redis://127.0.0.1:6379` | Enable Redis-backed batch jobs                                   |
-| `API_KEYS`                                      | unset                              | Comma-separated keys for batch authentication and per-key quotas |
+| `API_KEYS`                                      | unset                              | Semicolon-separated SHA-256 digests with optional `=scope+scope` |
+| `API_RATE_LIMIT` / `API_RATE_WINDOW_MS`         | `120` / `60000`                    | API requests allowed per client key in the time window           |
+| `CORS_ORIGINS`                                  | unset                              | Comma-separated exact browser origins; wildcard is rejected      |
 | `BATCH_MAX_ITEMS`                               | `100`                              | Maximum sources in one batch                                     |
 | `BATCH_CONCURRENCY_PER_API_KEY`                 | `2`                                | Active queued jobs per client key                                |
 | `BATCH_RATE_LIMIT_PER_API_KEY`                  | `10`                               | Jobs admitted per client within the rate window                  |
@@ -182,12 +186,18 @@ All settings are environment variables validated at startup. See [.env.example](
 
 ## Security
 
-Remote fetches use HTTP(S), reject non-public IP ranges, pin checked DNS results, and validate redirect targets. Optional `ALLOWED_HOSTS` narrows remote sources further. URL transforms are rate limited per client IP; keep Fastify proxy trust disabled unless the proxy chain is configured safely. Uploads are checked by file signature and bounded by byte and pixel limits. Keep the service behind trusted access controls; use `SIGNING_SECRET` and TLS when clients can request remote transforms. See [SECURITY.md](SECURITY.md).
+Remote fetches use HTTP(S), reject non-public IP ranges, pin checked DNS results, and validate every redirect target. Optional `ALLOWED_HOSTS` narrows remote sources further. Configure API keys as SHA-256 digests; raw keys are sent in the `X-API-Key` header and are not stored by the service. Records use `digest=scope+scope` and are separated by semicolons. Supported scopes are `transform`, `metadata`, `batch:read`, and `batch:write`; omit scopes to grant all four. Generate a digest with Node.js:
+
+```sh
+node -e 'console.log(require("node:crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' 'replace-with-a-long-random-key'
+```
+
+Set `CORS_ORIGINS` to exact origins such as `https://app.example.com`; requests from other browser origins are rejected. Uploads are checked by file signature and bounded by byte and total decoded-pixel limits. SVG input is not accepted, and image watermark overlays require raster PNG. Keep the service behind TLS and trusted access controls; use `SIGNING_SECRET` when clients can request remote transforms. See [SECURITY.md](SECURITY.md) and the [v0.5.0 security audit](docs/security-audit.md).
 
 ## Roadmap
 
 - S3-compatible storage adapter
-- Authentication and per-client quotas
+- Richer identity providers and quota policies
 - Metrics and tracing
 - More formats and animation controls
 - Reproducible published benchmarks

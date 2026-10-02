@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { envSchema } from "../../src/config/index.js";
+import { hashApiKey } from "../../src/security/api-keys.js";
 
 describe("security-related configuration bounds", () => {
   it("rejects request buffer budgets above 256 MiB", () => {
@@ -41,5 +42,32 @@ describe("security-related configuration bounds", () => {
   it("bounds configurable operation chain length", () => {
     expect(envSchema.safeParse({ MAX_OPS_CHAIN: 51 }).success).toBe(false);
     expect(envSchema.safeParse({ MAX_OPS_CHAIN: 32 }).success).toBe(true);
+  });
+
+  it("accepts hashed API keys with optional known scopes", () => {
+    expect(
+      envSchema.safeParse({
+        API_KEYS: `${hashApiKey("test-key")}=batch:read+batch:write`,
+      }).success,
+    ).toBe(true);
+    expect(envSchema.safeParse({ API_KEYS: "plaintext-secret" }).success).toBe(
+      false,
+    );
+    expect(
+      envSchema.safeParse({ API_KEYS: `${hashApiKey("test-key")}=admin` })
+        .success,
+    ).toBe(false);
+  });
+
+  it("accepts exact CORS origins and rejects wildcard or path entries", () => {
+    expect(
+      envSchema.safeParse({
+        CORS_ORIGINS: "https://app.example, http://localhost:5173",
+      }).success,
+    ).toBe(true);
+    expect(envSchema.safeParse({ CORS_ORIGINS: "*" }).success).toBe(false);
+    expect(
+      envSchema.safeParse({ CORS_ORIGINS: "https://app.example/path" }).success,
+    ).toBe(false);
   });
 });

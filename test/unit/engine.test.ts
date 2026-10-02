@@ -53,6 +53,44 @@ describe("transformImage", () => {
     );
   });
 
+  it("rasterizes markup-like watermark text without returning SVG", async () => {
+    const input = await sharp({
+      create: { width: 64, height: 48, channels: 3, background: "#808080" },
+    })
+      .png()
+      .toBuffer();
+    const result = await transformImage(
+      input,
+      [{ op: "watermark", text: '<script>alert("x")</script>' }],
+      10_000,
+      100,
+    );
+    expect(result.contentType).toBe("image/jpeg");
+    expect(result.buffer.subarray(0, 4).toString("ascii")).not.toContain(
+      "<svg",
+    );
+    expect((await sharp(result.buffer).metadata()).format).toBe("jpeg");
+  });
+
+  it("rejects SVG disguised as an image watermark", async () => {
+    const input = await sharp({
+      create: { width: 16, height: 16, channels: 3, background: "#fff" },
+    })
+      .png()
+      .toBuffer();
+    const encodedSvg = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg"/>',
+    ).toString("base64url");
+    await expect(
+      transformImage(
+        input,
+        [{ op: "watermark", image: encodedSvg }],
+        1000,
+        100,
+      ),
+    ).rejects.toThrow("Image watermark must be a PNG");
+  });
+
   it("auto-orients EXIF images before operations and strips metadata", async () => {
     const input = await sharp({
       create: { width: 12, height: 8, channels: 3, background: "#f00" },

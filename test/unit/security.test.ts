@@ -69,6 +69,33 @@ describe("SSRF DNS and redirect checks", () => {
     ).rejects.toThrow("Remote host is not allowed");
     expect(requested).toEqual(["public.example"]);
   });
+
+  it("re-resolves and blocks a same-host DNS rebinding redirect", async () => {
+    let resolutions = 0;
+    const requested: string[] = [];
+    await expect(
+      fetchRemoteImage(
+        "https://rebound.example/image.jpg",
+        { allowedHosts: [], timeoutMs: 1000, maxBytes: 1000 },
+        {
+          resolveAddresses: async () => {
+            resolutions += 1;
+            return resolutions === 1 ? ["8.8.8.8"] : ["10.0.0.2"];
+          },
+          requestPinned: async (url) => {
+            requested.push(url.hostname);
+            return {
+              statusCode: 302,
+              headers: { location: "/redirected.jpg" },
+              body: Buffer.alloc(0),
+            };
+          },
+        },
+      ),
+    ).rejects.toThrow("Remote host is not allowed");
+    expect(resolutions).toBe(2);
+    expect(requested).toEqual(["rebound.example"]);
+  });
 });
 
 describe("signed URLs", () => {

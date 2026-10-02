@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { validateApiKeyDefinitions } from "../security/api-keys.js";
 
 const optionalSecret = z.preprocess(
   (value) => (value === "" ? undefined : value),
@@ -56,7 +57,36 @@ export const envSchema = z
       .max(4)
       .default(2),
     MAX_OPS_CHAIN: z.coerce.number().int().positive().max(50).default(20),
-    API_KEYS: z.string().default(""),
+    API_KEYS: z.string().default("").refine(validateApiKeyDefinitions, {
+      message:
+        "API_KEYS must contain SHA-256 digests with optional allowed scopes",
+    }),
+    API_RATE_LIMIT: z.coerce.number().int().positive().max(10_000).default(120),
+    API_RATE_WINDOW_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(3_600_000)
+      .default(60_000),
+    CORS_ORIGINS: z
+      .string()
+      .default("")
+      .refine((value) => {
+        if (!value.trim()) return true;
+        return value.split(",").every((origin) => {
+          try {
+            const parsed = new URL(origin.trim());
+            return (
+              ["http:", "https:"].includes(parsed.protocol) &&
+              parsed.origin === origin.trim() &&
+              !parsed.username &&
+              !parsed.password
+            );
+          } catch {
+            return false;
+          }
+        });
+      }, "CORS_ORIGINS must be a comma-separated list of exact HTTP(S) origins"),
     ALLOWED_HOSTS: z.string().default(""),
     SIGNING_SECRET: z.string().optional(),
     CACHE_DIR: z.string().default("/tmp/image-craft-cache"),

@@ -7,6 +7,7 @@ import { createCacheKey } from "../../src/storage/cache-key.js";
 import type { Storage, StorageStats } from "../../src/storage/storage.js";
 import type { PluginRegistry } from "../../src/plugins/interface.js";
 import { signTransformUrl } from "../../src/security/signing.js";
+import { hashApiKey } from "../../src/security/api-keys.js";
 import type {
   BatchJobStatus,
   BatchQueue,
@@ -24,6 +25,9 @@ const testConfig: AppConfig = {
   CONCURRENCY_LIMIT: 10,
   REMOTE_TRANSFORM_RATE_LIMIT: 60,
   REMOTE_TRANSFORM_RATE_WINDOW_MS: 60_000,
+  API_RATE_LIMIT: 120,
+  API_RATE_WINDOW_MS: 60_000,
+  CORS_ORIGINS: "",
   IMAGE_PROCESSING_CONCURRENCY: 2,
   MAX_OPS_CHAIN: 20,
   API_KEYS: "",
@@ -214,7 +218,7 @@ describe("HTTP API", () => {
 
   it("negotiates f_auto from Accept and varies cache output by format", async () => {
     const autoApp = await createApp(
-      testConfig,
+      { ...testConfig, CORS_ORIGINS: "https://client.example" },
       new MemoryStorage(),
       undefined,
       undefined,
@@ -229,7 +233,10 @@ describe("HTTP API", () => {
     const path = "/v1/img/f_auto/https%3A%2F%2Fexample.com%2Fauto.jpg";
     const avif = await autoApp.inject({
       url: path,
-      headers: { accept: "image/avif,image/webp" },
+      headers: {
+        accept: "image/avif,image/webp",
+        origin: "https://client.example",
+      },
     });
     const webp = await autoApp.inject({
       url: path,
@@ -243,6 +250,10 @@ describe("HTTP API", () => {
     expect(webp.headers["content-type"]).toContain("image/webp");
     expect(original.headers["content-type"]).toContain("image/jpeg");
     expect(avif.headers.vary).toContain("Accept");
+    expect(avif.headers.vary).toContain("Origin");
+    expect(avif.headers["access-control-allow-origin"]).toBe(
+      "https://client.example",
+    );
     expect(webp.headers.vary).toContain("Accept");
     const upload = multipart(image, {
       ops: '[{"op":"format","format":"auto"}]',
@@ -455,7 +466,11 @@ describe("HTTP API", () => {
   it("requires a configured API key and uses a constant client identifier", async () => {
     const queue = new MemoryBatchQueue();
     const server = await createApp(
-      { ...testConfig, QUEUE_ENABLED: true, API_KEYS: "secret-one,secret-two" },
+      {
+        ...testConfig,
+        QUEUE_ENABLED: true,
+        API_KEYS: `${hashApiKey("secret-one")}=batch:write+batch:read;${hashApiKey("secret-two")}`,
+      },
       new MemoryStorage(),
       queue,
     );
@@ -476,6 +491,101 @@ describe("HTTP API", () => {
     });
     expect(queued.statusCode).toBe(202);
     expect(queue.input[0]?.apiKeyId).not.toContain("secret-one");
+    await server.close();
+  });
+
+  it("enforces API scopes, per-key limits, strict CORS, and security headers", async () => {
+    const secret = "scope-limited-key";
+    const server = await createApp({
+      ...testConfig,
+      API_KEYS: `${hashApiKey(secret)}=metadata+transform`,
+      CORS_ORIGINS: "https://client.example",
+    });
+    await server.ready();
+    const headers = { "x-api-key": secret };
+    const missingScope = await server.inject({
+      method: "POST",
+      url: "/v1/batch",
+      headers,
+      payload: { sources: ["https://example.com/a.png"], ops: [] },
+    });
+    expect(missingScope.statusCode).toBe(403);
+    expect(missingScope.headers["x-content-type-options"]).toBe("nosniff");
+    expect(missingScope.headers["content-security-policy"]).toContain(
+      "default-src 'none'",
+    );
+
+    const allowedCors = await server.inject({
+      method: "GET",
+      url: "/health",
+      headers: { origin: "https://client.example" },
+    });
+    expect(allowedCors.headers["access-control-allow-origin"]).toBe(
+      "https://client.example",
+    );
+    const deniedCors = await server.inject({
+      method: "POST",
+      url: "/v1/metadata",
+      headers: { origin: "https://attacker.example", ...headers },
+      payload: {},
+    });
+    expect(deniedCors.statusCode).toBe(403);
+
+    const preflight = await server.inject({
+      method: "OPTIONS",
+      url: "/v1/transform",
+      headers: {
+        origin: "https://client.example",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "content-type,x-api-key",
+      },
+    });
+    expect(preflight.statusCode).toBe(204);
+    const deniedHeader = await server.inject({
+      method: "OPTIONS",
+      url: "/v1/transform",
+      headers: {
+        origin: "https://client.example",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "x-evil",
+      },
+    });
+    expect(deniedHeader.statusCode).toBe(403);
+
+    await server.close();
+  });
+
+  it("rate limits API requests by the configured API key", async () => {
+    const secret = "rate-limited-key";
+    const otherSecret = "another-rate-limited-key";
+    const server = await createApp({
+      ...testConfig,
+      API_KEYS: `${hashApiKey(secret)};${hashApiKey(otherSecret)}`,
+      API_RATE_LIMIT: 1,
+    });
+    await server.ready();
+    const headers = { "x-api-key": secret };
+    const first = await server.inject({
+      method: "POST",
+      url: "/v1/metadata",
+      headers,
+      payload: {},
+    });
+    const second = await server.inject({
+      method: "POST",
+      url: "/v1/metadata",
+      headers,
+      payload: {},
+    });
+    const otherKey = await server.inject({
+      method: "POST",
+      url: "/v1/metadata",
+      headers: { "x-api-key": otherSecret },
+      payload: {},
+    });
+    expect(first.statusCode).toBe(406);
+    expect(second.statusCode).toBe(429);
+    expect(otherKey.statusCode).toBe(406);
     await server.close();
   });
 

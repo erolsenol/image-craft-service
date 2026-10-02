@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here.
 
+## [0.5.0] - 2026-10-02
+
+### Security
+
+- Count all decoded image pages against the configured pixel budget and stream batch ZIP entries with one result file open at a time.
+- Require digest-only API key configuration with route scopes and per-key request limits; add exact-origin CORS enforcement and browser security headers.
+- Reject SVG inputs and SVG watermark payloads; text watermarks remain escaped and are served only as raster output.
+- Add the v0.5.0 security audit, `npm audit` CI gate, and coordinated vulnerability disclosure process.
+
 ## [0.4.0] - 2026-10-02
 
 ### Added

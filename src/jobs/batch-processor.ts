@@ -108,7 +108,10 @@ async function loadOwnedUpload(
 }
 
 export function createZipStream(
-  files: ReadonlyArray<{ name: string; stream: Readable }>,
+  files: ReadonlyArray<{
+    name: string;
+    open: () => Promise<Readable | undefined>;
+  }>,
   errors: unknown,
   maxBytes: number,
 ): Readable {
@@ -133,11 +136,39 @@ export function createZipStream(
     output.destroy(error);
   });
   archive.pipe(outputLimit).pipe(output);
-  for (const file of files) archive.append(file.stream, { name: file.name });
-  archive.append(JSON.stringify(errors, null, 2), { name: "errors.json" });
-  void archive.finalize().catch((error: unknown) => {
-    output.destroy(error instanceof Error ? error : new Error("ZIP failed"));
-  });
+  let nextFile = 0;
+  let errorsAdded = false;
+  let finalized = false;
+  const appendNext = async () => {
+    try {
+      if (nextFile < files.length) {
+        const file = files[nextFile++];
+        const stream = await file!.open();
+        if (!stream) throw new AppError("Batch result has expired", 410);
+        stream.once("error", (error) => {
+          archive.abort();
+          output.destroy(error);
+        });
+        archive.append(stream, { name: file!.name });
+        return;
+      }
+      if (!errorsAdded) {
+        errorsAdded = true;
+        archive.append(JSON.stringify(errors, null, 2), {
+          name: "errors.json",
+        });
+        return;
+      }
+      if (finalized) return;
+      finalized = true;
+      await archive.finalize();
+    } catch (error) {
+      archive.abort();
+      output.destroy(error instanceof Error ? error : new Error("ZIP failed"));
+    }
+  };
+  archive.on("entry", () => void appendNext());
+  void appendNext();
   return output;
 }
 
