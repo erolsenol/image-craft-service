@@ -43,7 +43,7 @@
   },
   "main": "./dist/server.js",
   "bin": {
-    "image-craft-service": "./dist/server.js"
+    "image-craft-service": "dist/server.js"
   },
   "files": [
     "dist/**",
