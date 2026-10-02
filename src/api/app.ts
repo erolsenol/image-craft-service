@@ -16,12 +16,18 @@ import { BullMqBatchQueue } from "../jobs/bullmq-batch-queue.js";
 import { createPluginRegistry } from "../plugins/registry.js";
 import type { PluginRegistry } from "../plugins/interface.js";
 import { ConcurrencyLimiter } from "../security/concurrency.js";
+import { fetchRemoteImage } from "../security/ssrf.js";
+
+export interface AppDependencies {
+  remoteImageFetcher?: typeof fetchRemoteImage;
+}
 
 export async function createApp(
   config: AppConfig = defaultConfig,
   storage?: Storage,
   batchQueue?: BatchQueue,
   plugins?: PluginRegistry,
+  dependencies: AppDependencies = {},
 ) {
   const app = Fastify({
     logger: { level: config.NODE_ENV === "development" ? "debug" : "info" },
@@ -73,7 +79,7 @@ export async function createApp(
     openapi: {
       info: {
         title: "Image Craft Service",
-        version: "0.1.2",
+        version: "0.2.0",
         description: "Self-hosted image processing HTTP API",
       },
       servers: [{ url: "/" }],
@@ -88,6 +94,9 @@ export async function createApp(
     storage: activeStorage,
     plugins: activePlugins,
     processingLimiter,
+    ...(dependencies.remoteImageFetcher
+      ? { remoteImageFetcher: dependencies.remoteImageFetcher }
+      : {}),
   });
   await app.register(batchRoutes, {
     config,

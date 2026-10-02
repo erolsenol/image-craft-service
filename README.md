@@ -8,7 +8,7 @@
 
 - Resize, crop, rotate, blur, sharpen, watermark, grayscale, and convert to JPEG, PNG, WebP, or AVIF.
 - Transform uploaded images or public remote URLs; strip metadata from output.
-- Disk cache with TTL, size-bounded LRU eviction, and `X-Cache` headers.
+- Disk cache with TTL, size-bounded LRU eviction, request coalescing, and `X-Cache` / ETag headers.
 - Optional Redis-backed batch jobs that return ZIP downloads.
 - SSRF defenses, signed URLs, input and output limits, and bounded processing concurrency.
 - Optional rembg background removal plugin.
@@ -50,6 +50,26 @@ curl -L 'http://localhost:3000/v1/img/w_400,h_300,fit_cover,f_webp/https://examp
 
 Remote images must resolve to public IP addresses. See [Security](#security) before exposing the API to untrusted clients.
 
+Remote transform cache keys combine the normalized source URL, canonical operation chain, and output format. Concurrent identical misses share one fetch and transform. Responses include `X-Cache: HIT|MISS`, a content-based `ETag`, and `Cache-Control`.
+
+Send the ETag from the first response in `If-None-Match` to get `304 Not Modified` when the cached image is unchanged:
+
+```sh
+curl -i -H 'If-None-Match: "<etag-from-first-response>"' \
+  'http://localhost:3000/v1/img/w_400,f_webp/https://example.com/photo.jpg'
+```
+
+### Sign transform URLs
+
+Set the same `SIGNING_SECRET` on the service and when creating a signature. The helper accepts a complete `/v1/img/:ops/*src` URL; `--expires-in` adds an optional expiry in seconds.
+
+```sh
+export SIGNING_SECRET='replace-with-a-long-random-secret'
+npm run sign -- 'http://localhost:3000/v1/img/w_400,f_webp/https://example.com/photo.jpg' --expires-in 3600
+```
+
+The command prints the signed URL with `sig` and `expires` query parameters. Use that URL as usual; altered operations, source URLs, or expired signatures are rejected with `403`.
+
 ## Benchmarks
 
 No benchmark results are published yet. Performance depends on the image, operation chain, hardware, and concurrency settings. A future benchmark will include its dataset, environment, and reproducible commands.
@@ -77,6 +97,8 @@ Choose based on your runtime, deployment model, and required transforms. This pr
 | `GET /v1/jobs/:id`          | Poll a batch job or download its ZIP                 |
 | `GET /health`, `GET /ready` | Liveness and readiness checks                        |
 | `GET /docs`                 | OpenAPI documentation and Swagger UI                 |
+
+For the remote transform endpoint, OpenAPI documents `sig`, `expires`, `If-None-Match`, and the `X-Cache`, `ETag`, and `Cache-Control` response headers.
 
 For URL transforms, operation tokens include `w`, `h`, `fit`, `rot`, `blur`, `sharp`, `gray_1`, `wm`, `f`, and `q`. Multipart requests accept a JSON `ops` array. See the examples above and [Swagger UI](http://localhost:3000/docs) for request schemas.
 

@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { AppConfig } from "../../config/index.js";
 import { AppError } from "../../core/errors.js";
@@ -7,11 +8,12 @@ import { createPluginRegistry } from "../../plugins/registry.js";
 import type { PluginRegistry } from "../../plugins/interface.js";
 import type { ConcurrencyLimiter } from "../../security/concurrency.js";
 import { fetchRemoteImage } from "../../security/ssrf.js";
-import { verifySignature } from "../../security/signing.js";
+import { verifyTransformSignature } from "../../security/signing.js";
 import { validateImage } from "../../security/limits.js";
-import { createCacheKey } from "../../storage/cache-key.js";
+import { createCacheKey, getOutputFormat } from "../../storage/cache-key.js";
 import type { Storage } from "../../storage/storage.js";
 import { operationsSchema, type Operation } from "../schemas/operations.js";
+import { SingleFlight } from "../../core/single-flight.js";
 
 const jsonOpsSchema = z.object({ ops: operationsSchema });
 export async function transformRoutes(
@@ -21,11 +23,17 @@ export async function transformRoutes(
     storage: Storage;
     plugins?: PluginRegistry;
     processingLimiter?: ConcurrencyLimiter;
+    remoteImageFetcher?: typeof fetchRemoteImage;
   },
 ): Promise<void> {
   const { config, storage } = options;
   const plugins = options.plugins ?? createPluginRegistry(config);
   const { processingLimiter } = options;
+  const fetchImage = options.remoteImageFetcher ?? fetchRemoteImage;
+  const transformFlights = new SingleFlight<{
+    buffer: Buffer;
+    contentType: string;
+  }>();
   app.addSchema({
     $id: "Error",
     type: "object",
@@ -163,7 +171,7 @@ export async function transformRoutes(
 
   app.get<{
     Params: { ops: string; "*": string };
-    Querystring: { sig?: string };
+    Querystring: { sig?: string; expires?: string };
   }>(
     "/v1/img/:ops/*",
     {
@@ -180,15 +188,43 @@ export async function transformRoutes(
         },
         querystring: {
           type: "object",
-          properties: { sig: { type: "string" } },
+          properties: {
+            sig: { type: "string", description: "HMAC-SHA256 signature" },
+            expires: {
+              type: "string",
+              description: "Optional Unix expiry time in seconds",
+            },
+          },
+        },
+        headers: {
+          type: "object",
+          properties: {
+            "if-none-match": {
+              type: "string",
+              description: "Return 304 when the cached image matches this ETag",
+            },
+          },
         },
         response: {
           200: {
             type: "string",
             format: "binary",
             description: "Transformed image",
+            headers: {
+              "X-Cache": { schema: { type: "string", enum: ["HIT", "MISS"] } },
+              ETag: { schema: { type: "string" } },
+              "Cache-Control": { schema: { type: "string" } },
+            },
           },
-          304: { type: "null", description: "Cached representation is fresh" },
+          304: {
+            type: "null",
+            description: "The cached representation matches If-None-Match",
+            headers: {
+              "X-Cache": { schema: { type: "string", enum: ["HIT", "MISS"] } },
+              ETag: { schema: { type: "string" } },
+              "Cache-Control": { schema: { type: "string" } },
+            },
+          },
           403: { $ref: "Error#" },
         },
       },
@@ -207,8 +243,10 @@ export async function transformRoutes(
         throw new AppError("Invalid remote URL", 400);
       }
       if (
-        !verifySignature(
-          `${request.params.ops}/${url}`,
+        !verifyTransformSignature(
+          source,
+          request.params.ops,
+          request.query.expires,
           request.query.sig,
           config.SIGNING_SECRET,
         )
@@ -220,47 +258,63 @@ export async function transformRoutes(
       } catch {
         throw new AppError("Invalid URL operations", 400);
       }
-      const key = createCacheKey(source, parsedOps);
-      const etag = `"${key}"`;
-      reply
-        .header("ETag", etag)
-        .header(
-          "Cache-Control",
-          `public, max-age=${config.CACHE_MAX_AGE_SECONDS}`,
-        );
+      const outputFormat = getOutputFormat(parsedOps);
+      const key = createCacheKey(source, parsedOps, outputFormat);
+      reply.header(
+        "Cache-Control",
+        `public, max-age=${config.CACHE_MAX_AGE_SECONDS}`,
+      );
       let output = await storage.get(key);
-      reply.header("X-Cache", output === undefined ? "MISS" : "HIT");
-      if (request.headers["if-none-match"] === etag)
-        return reply.code(304).send();
-      let contentType = "image/jpeg";
+      const wasCacheHit = output !== undefined;
+      reply.header("X-Cache", wasCacheHit ? "HIT" : "MISS");
+      let contentType = contentTypeFor(outputFormat);
       if (output === undefined) {
-        const remote = await fetchRemoteImage(source.toString(), {
-          allowedHosts: config.ALLOWED_HOSTS.split(",")
-            .map((host) => host.trim().toLowerCase())
-            .filter(Boolean),
-          timeoutMs: config.REQUEST_TIMEOUT_MS,
-          maxBytes: config.MAX_UPLOAD_BYTES,
+        const transformed = await transformFlights.run(key, async () => {
+          const concurrentCacheValue = await storage.get(key);
+          if (concurrentCacheValue !== undefined)
+            return { buffer: concurrentCacheValue, contentType };
+
+          const remote = await fetchImage(source.toString(), {
+            allowedHosts: config.ALLOWED_HOSTS.split(",")
+              .map((host) => host.trim().toLowerCase())
+              .filter(Boolean),
+            timeoutMs: config.REQUEST_TIMEOUT_MS,
+            maxBytes: config.MAX_UPLOAD_BYTES,
+          });
+          const result = await runImageOperations(
+            remote.body,
+            parsedOps,
+            plugins,
+            config.MAX_INPUT_PIXELS,
+            config.MAX_OUTPUT_DIMENSION,
+            processingLimiter,
+          );
+          await storage.set(key, result.buffer, config.CACHE_MAX_AGE_SECONDS);
+          return { buffer: result.buffer, contentType: result.contentType };
         });
-        const result = await runImageOperations(
-          remote.body,
-          parsedOps,
-          plugins,
-          config.MAX_INPUT_PIXELS,
-          config.MAX_OUTPUT_DIMENSION,
-          processingLimiter,
-        );
-        output = result.buffer;
-        contentType = result.contentType;
-        await storage.set(key, output, config.CACHE_MAX_AGE_SECONDS);
-      } else {
-        const format = [...parsedOps]
-          .reverse()
-          .find((operation) => operation.op === "format");
-        if (format?.op === "format") contentType = `image/${format.format}`;
+        output = transformed.buffer;
+        contentType = transformed.contentType;
       }
+
+      const etag = `"${createHash("sha256").update(output).digest("base64url")}"`;
+      reply.header("ETag", etag);
+      if (matchesEtag(request.headers["if-none-match"], etag))
+        return reply.code(304).send();
       return reply.type(contentType).send(output);
     },
   );
+}
+
+function contentTypeFor(format: string): string {
+  return format === "jpeg" ? "image/jpeg" : `image/${format}`;
+}
+
+function matchesEtag(header: string | undefined, etag: string): boolean {
+  if (!header) return false;
+  return header.split(",").some((candidate) => {
+    const value = candidate.trim();
+    return value === "*" || value === etag || value === `W/${etag}`;
+  });
 }
 
 function parseCompactOps(value: string): Operation[] {

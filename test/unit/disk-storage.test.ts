@@ -21,6 +21,19 @@ afterEach(async () => {
 });
 
 describe("DiskStorage", () => {
+  it("reports only unexpired entries and their size", async () => {
+    const storage = new DiskStorage(directory, 1024);
+    await storage.set("active", Buffer.from("image"), 60);
+    await storage.set("expired", Buffer.from("old"), 0.01);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    await expect(storage.stats()).resolves.toEqual({
+      entries: 1,
+      sizeBytes: expect.any(Number),
+      maxSizeBytes: 1024,
+    });
+  });
+
   it("stores entries and removes them on delete", async () => {
     const storage = new DiskStorage(directory, 1024);
     await storage.set("entry", Buffer.from("image"), 60);

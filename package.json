@@ -1,6 +1,6 @@
 {
   "name": "image-craft-service",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "Self-hosted image processing HTTP API",
   "license": "MIT",
   "type": "module",
@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "sign": "tsx src/cli/sign.ts",
     "prepack": "rm -rf dist && npm run build",
     "prepublishOnly": "npm run lint && npm run typecheck && npm test && npm run build"
   },

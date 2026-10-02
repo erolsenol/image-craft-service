@@ -3,8 +3,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../../src/api/app.js";
 import type { AppConfig } from "../../src/config/index.js";
 import { createCacheKey } from "../../src/storage/cache-key.js";
-import type { Storage } from "../../src/storage/storage.js";
+import type { Storage, StorageStats } from "../../src/storage/storage.js";
 import type { PluginRegistry } from "../../src/plugins/interface.js";
+import { signTransformUrl } from "../../src/security/signing.js";
 import type {
   BatchJobStatus,
   BatchQueue,
@@ -105,6 +106,14 @@ class MemoryStorage implements Storage {
   async delete(key: string): Promise<void> {
     this.values.delete(key);
   }
+  async stats(): Promise<StorageStats> {
+    const values = [...this.values.values()];
+    return {
+      entries: values.length,
+      sizeBytes: values.reduce((total, value) => total + value.byteLength, 0),
+      maxSizeBytes: Number.MAX_SAFE_INTEGER,
+    };
+  }
 }
 
 describe("HTTP API", () => {
@@ -148,6 +157,13 @@ describe("HTTP API", () => {
     expect(docs.json().paths).toHaveProperty("/v1/metadata");
     expect(docs.json().paths).toHaveProperty("/v1/batch");
     expect(docs.json().paths).toHaveProperty("/v1/jobs/{id}");
+    expect(docs.json().paths["/v1/img/{ops}/{*}"]?.get?.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "sig", in: "query" }),
+        expect.objectContaining({ name: "expires", in: "query" }),
+        expect.objectContaining({ name: "if-none-match", in: "header" }),
+      ]),
+    );
   });
 
   it("queues batch jobs and downloads the completed ZIP", async () => {
@@ -312,7 +328,92 @@ describe("HTTP API", () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers["x-cache"]).toBe("HIT");
     expect(response.headers["content-type"]).toContain("image/webp");
+    expect(response.headers.etag).toBeDefined();
+    expect(response.headers["cache-control"]).toContain("max-age=60");
     expect(response.rawPayload).toEqual(cachedImage);
+  });
+
+  it("coalesces identical cache misses and serves ETag revalidation", async () => {
+    const missStorage = new MemoryStorage();
+    let fetches = 0;
+    const remoteImageFetcher = async () => {
+      fetches += 1;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return { body: image, contentType: "image/jpeg" };
+    };
+    const server = await createApp(
+      testConfig,
+      missStorage,
+      undefined,
+      undefined,
+      { remoteImageFetcher },
+    );
+    await server.ready();
+    const url = "/v1/img/w_4/https://example.com/coalesced.jpg";
+    const [first, second] = await Promise.all([
+      server.inject(url),
+      server.inject(url),
+    ]);
+
+    expect(fetches).toBe(1);
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(first.headers["x-cache"]).toBe("MISS");
+    expect(second.headers["x-cache"]).toBe("MISS");
+    expect(first.headers.etag).toBe(second.headers.etag);
+    expect(await missStorage.stats()).toMatchObject({ entries: 1 });
+
+    const revalidated = await server.inject({
+      url,
+      headers: { "if-none-match": first.headers.etag },
+    });
+    expect(revalidated.statusCode).toBe(304);
+    expect(revalidated.headers["x-cache"]).toBe("HIT");
+    expect(revalidated.headers.etag).toBe(first.headers.etag);
+    expect(fetches).toBe(1);
+    await server.close();
+  });
+
+  it("accepts signed URL requests and rejects tampering and expiry", async () => {
+    const secret = "integration-test-secret";
+    const server = await createApp(
+      { ...testConfig, SIGNING_SECRET: secret },
+      new MemoryStorage(),
+      undefined,
+      undefined,
+      {
+        remoteImageFetcher: async () => ({
+          body: image,
+          contentType: "image/jpeg",
+        }),
+      },
+    );
+    await server.ready();
+    const sourceUrl =
+      "http://localhost/v1/img/w_4/https://example.com/signed.jpg";
+    const futureExpiry = String(Math.floor(Date.now() / 1000) + 60);
+    const signed = new URL(signTransformUrl(sourceUrl, secret, futureExpiry));
+    const accepted = await server.inject(`${signed.pathname}${signed.search}`);
+    expect(accepted.statusCode).toBe(200);
+
+    const tampered = new URL(signed);
+    tampered.pathname = tampered.pathname.replace("w_4", "w_5");
+    expect(
+      (await server.inject(`${tampered.pathname}${tampered.search}`))
+        .statusCode,
+    ).toBe(403);
+
+    const expired = new URL(
+      signTransformUrl(
+        sourceUrl,
+        secret,
+        String(Math.floor(Date.now() / 1000) - 10),
+      ),
+    );
+    expect(
+      (await server.inject(`${expired.pathname}${expired.search}`)).statusCode,
+    ).toBe(403);
+    await server.close();
   });
 
   it("returns metadata and rejects non-images", async () => {

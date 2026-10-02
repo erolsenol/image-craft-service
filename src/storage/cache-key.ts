@@ -4,8 +4,11 @@ import type { Operation } from "../api/schemas/operations.js";
 export function createCacheKey(
   source: string | URL,
   ops: readonly Operation[],
+  outputFormat = getOutputFormat(ops),
 ): string {
-  const canonicalSource = new URL(source).toString();
+  const sourceUrl = new URL(source);
+  sourceUrl.hash = "";
+  const canonicalSource = sourceUrl.toString();
   const normalizedOps = ops.map((operation) => {
     switch (operation.op) {
       case "resize":
@@ -18,6 +21,28 @@ export function createCacheKey(
         return { ...operation };
     }
   });
-  const input = JSON.stringify({ source: canonicalSource, ops: normalizedOps });
+  const canonicalOps = JSON.stringify(sortObjectKeys(normalizedOps));
+  const input = JSON.stringify({
+    source: canonicalSource,
+    ops: canonicalOps,
+    outputFormat,
+  });
   return createHash("sha256").update(input).digest("hex");
+}
+
+export function getOutputFormat(ops: readonly Operation[]): string {
+  return (
+    [...ops].reverse().find((operation) => operation.op === "format")?.format ??
+    "jpeg"
+  );
+}
+
+function sortObjectKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortObjectKeys);
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, sortObjectKeys(item)]),
+  );
 }
