@@ -1,0 +1,64 @@
+{
+  "benchmark": "engine transform before and after intermediate removal",
+  "capturedAt": "2026-10-03",
+  "host": {
+    "cpu": "Apple M4",
+    "ramBytes": 17179869184,
+    "os": "macOS"
+  },
+  "runtime": {
+    "node": "v26.8.2",
+    "sharp": "0.35.5",
+    "libvips": "8.18.7",
+    "sharpConcurrency": 2,
+    "sharpCacheMemoryMb": 32
+  },
+  "input": {
+    "width": 2400,
+    "height": 1600,
+    "bytes": 53970,
+    "description": "Sharp-generated solid-color RGB PNG"
+  },
+  "workload": {
+    "iterationsPerFormat": 12,
+    "sequence": "12 sequential WebP transforms, then 12 sequential AVIF transforms",
+    "outputWidth": 800,
+    "quality": 75,
+    "warmup": false
+  },
+  "results": [
+    {
+      "engine": "v0.9.0",
+      "format": "webp",
+      "totalMs": 256.6,
+      "perImageMs": 21.38,
+      "processRssBytesAfterFormat": 132448256
+    },
+    {
+      "engine": "v1.0.0-candidate",
+      "format": "webp",
+      "totalMs": 164.6,
+      "perImageMs": 13.72,
+      "processRssBytesAfterFormat": 101679104
+    },
+    {
+      "engine": "v0.9.0",
+      "format": "avif",
+      "totalMs": 487.6,
+      "perImageMs": 40.63,
+      "processRssBytesAfterFormat": 149880832
+    },
+    {
+      "engine": "v1.0.0-candidate",
+      "format": "avif",
+      "totalMs": 353.3,
+      "perImageMs": 29.44,
+      "processRssBytesAfterFormat": 119341056
+    }
+  ],
+  "notes": [
+    "The two engine versions were checked out at v0.9.0 and the candidate source, then run separately with the same script, runtime, fixture, Sharp thread count, and cache limits.",
+    "RSS is sampled after each format; the AVIF figure includes memory retained after the preceding WebP batch.",
+    "No HTTP request, cache, network fetch, or concurrency load was measured."
+  ]
+}

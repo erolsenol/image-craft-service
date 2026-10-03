@@ -1,8 +1,8 @@
 replicaCount: 2
 
 image:
-  repository: registry.example.com/image-craft-service
-  tag: "0.9.0"
+  repository: ghcr.io/erolsenol/image-craft-service
+  tag: "1.0.0"
   pullPolicy: IfNotPresent
 
 service:
@@ -20,6 +20,9 @@ env:
   S3_REGION: us-east-1
   S3_BUCKET: image-craft
   S3_FORCE_PATH_STYLE: "true"
+  IMAGE_PROCESSING_CONCURRENCY: "2"
+  SHARP_CONCURRENCY: "2"
+  SHARP_CACHE_MEMORY_MB: "32"
   CACHE_MAX_AGE_SECONDS: "86400"
   NAMED_SOURCES: "{}"
 

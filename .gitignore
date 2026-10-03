@@ -6,6 +6,9 @@ coverage/
 !.env.example
 *.log
 .cache/
+/.vitepress/
+docs-site/.vitepress/dist/
+docs-site/.vitepress/cache/
 .DS_Store
 .vscode/
 __pycache__/

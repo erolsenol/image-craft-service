@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented here.
 
+## [1.0.0] - 2026-10-03
+
+### Added
+
+- Declared `/v1` stable with a documented compatibility/deprecation policy and a 0.9.x upgrade guide.
+- Added a VitePress documentation site and GitHub Pages deployment for setup, API, configuration, deployment, plugins, FAQ, and security guides.
+- Added Changesets release PR automation and a release workflow for signed multi-architecture GHCR images with SPDX SBOM attestations.
+- Added reproducible k6 comparison scripts and recorded the local transform-engine profile. Cross-project HTTP results remain unpublished until a controlled three-service run is available.
+- Added a production dependency/license inventory covering Sharp and bundled libvips terms.
+- Fixed pinned HTTPS fetches for Node's multi-address DNS callback mode; the regression test covers both lookup callback shapes.
+
+### Changed
+
+- Removed the unnecessary full-image auto-orientation and PNG encode/decode intermediate. Sharp now applies orientation and encodes directly from its pipeline unless rounded corners require an intermediate.
+- Added bounded Sharp/libvips thread and cache settings (`SHARP_CONCURRENCY=2`, `SHARP_CACHE_MEMORY_MB=32`) and a 2 GiB Compose API memory limit.
+- Updated deployment examples to the v1.0.0 GHCR image.
+
 ## [0.9.0] - 2026-10-03
 
 ### Added

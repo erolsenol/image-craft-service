@@ -33,6 +33,8 @@ services:
     volumes:
       - image-cache:/var/cache/image-craft
     restart: unless-stopped
+    mem_limit: 2g
+    cpus: 2
     depends_on:
       redis:
         condition: service_healthy

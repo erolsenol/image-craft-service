@@ -44,6 +44,15 @@ describe("security-related configuration bounds", () => {
     expect(envSchema.safeParse({ MAX_OPS_CHAIN: 32 }).success).toBe(true);
   });
 
+  it("bounds sharp threads and libvips cache memory", () => {
+    expect(envSchema.parse({}).SHARP_CONCURRENCY).toBe(2);
+    expect(envSchema.parse({}).SHARP_CACHE_MEMORY_MB).toBe(32);
+    expect(envSchema.safeParse({ SHARP_CONCURRENCY: 9 }).success).toBe(false);
+    expect(envSchema.safeParse({ SHARP_CACHE_MEMORY_MB: 15 }).success).toBe(
+      false,
+    );
+  });
+
   it("keeps AI plugin timeouts within the HTTP request timeout", () => {
     expect(
       envSchema.safeParse({

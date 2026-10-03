@@ -38,10 +38,12 @@ jobs:
       - run: npm run sdk:generate
       - run: git diff --exit-code -- openapi/openapi.json packages/client/src/generated.ts packages/python/image_craft_client/_openapi.py
       - run: npm run client:build
+      - run: npm run docs:build
       - run: docker run --detach --rm --name image-craft-minio --publish 9000:9000 --env MINIO_ROOT_USER=minioadmin --env MINIO_ROOT_PASSWORD=minioadmin ghcr.io/coollabsio/minio:RELEASE.2025-04-22T22-12-26Z server /data
       - run: npm audit --audit-level=high
       - run: npm run lint
       - run: npm run typecheck
+      - run: npm run format:check
       - run: npm test
       - run: python3 -m unittest discover -s packages/python/tests
       - run: python3 -m pip install build

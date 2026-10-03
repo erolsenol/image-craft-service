@@ -11,6 +11,9 @@ data:
   S3_REGION: us-east-1
   S3_BUCKET: image-craft
   S3_FORCE_PATH_STYLE: "true"
+  IMAGE_PROCESSING_CONCURRENCY: "2"
+  SHARP_CONCURRENCY: "2"
+  SHARP_CACHE_MEMORY_MB: "32"
   CACHE_MAX_AGE_SECONDS: "86400"
   NAMED_SOURCES: "{}"
 ---
@@ -30,7 +33,7 @@ spec:
     spec:
       containers:
         - name: api
-          image: registry.example.com/image-craft-service:0.9.0
+          image: ghcr.io/erolsenol/image-craft-service:1.0.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

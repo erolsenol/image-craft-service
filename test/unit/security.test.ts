@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createPinnedLookup,
   fetchRemoteImage,
   isPublicIp,
   resolvePublicAddresses,
@@ -38,6 +39,23 @@ describe("SSRF IP filtering", () => {
 });
 
 describe("SSRF DNS and redirect checks", () => {
+  it("returns the pinned result in both Node lookup callback shapes", () => {
+    const lookupAddress = createPinnedLookup("8.8.8.8");
+    lookupAddress(
+      "images.example",
+      { all: false },
+      (error, address, family) => {
+        expect(error).toBeNull();
+        expect(address).toBe("8.8.8.8");
+        expect(family).toBe(4);
+      },
+    );
+    lookupAddress("images.example", { all: true }, (error, address) => {
+      expect(error).toBeNull();
+      expect(address).toEqual([{ address: "8.8.8.8", family: 4 }]);
+    });
+  });
+
   it("rejects a hostname when any DNS answer is non-public", async () => {
     await expect(
       resolvePublicAddresses("mixed.example", async () => [

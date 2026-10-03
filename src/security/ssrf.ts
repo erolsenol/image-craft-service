@@ -2,6 +2,7 @@ import { AppError } from "../core/errors.js";
 import { lookup } from "node:dns/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
+import type { RequestOptions } from "node:https";
 import type { IncomingHttpHeaders } from "node:http";
 import ipaddr from "ipaddr.js";
 
@@ -164,15 +165,10 @@ function requestPinned(
       url,
       {
         timeout: timeoutMs,
-        lookup: (_hostname, _options, callback) =>
-          callback(
-            null,
-            address,
-            ipaddr.parse(address).kind() === "ipv4" ? 4 : 6,
-          ),
+        lookup: createPinnedLookup(address),
         headers: {
           accept: "image/*",
-          "user-agent": "image-craft-service/0.9.0",
+          "user-agent": "image-craft-service/1.0.0",
           ...additionalHeaders,
         },
       },
@@ -224,4 +220,14 @@ function requestPinned(
     request.on("error", reject);
     request.end();
   });
+}
+
+export function createPinnedLookup(
+  address: string,
+): NonNullable<RequestOptions["lookup"]> {
+  const family = ipaddr.parse(address).kind() === "ipv4" ? 4 : 6;
+  return (_hostname, options, callback) => {
+    if (options.all) callback(null, [{ address, family }]);
+    else callback(null, address, family);
+  };
 }

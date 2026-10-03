@@ -32,6 +32,8 @@ const testConfig: AppConfig = {
   OTEL_ENABLED: false,
   OTEL_EXPORTER_OTLP_ENDPOINT: "http://localhost:4318",
   IMAGE_PROCESSING_CONCURRENCY: 2,
+  SHARP_CONCURRENCY: 2,
+  SHARP_CACHE_MEMORY_MB: 32,
   MAX_OPS_CHAIN: 20,
   API_KEYS: "",
   ALLOWED_HOSTS: "",
@@ -264,7 +266,7 @@ describe("HTTP API", () => {
     ).toBe("binary");
     expect(docs.json().paths).toHaveProperty("/v1/hash/{*}");
     expect(docs.json().paths).toHaveProperty("/metrics");
-    expect(docs.json().info.version).toBe("0.9.0");
+    expect(docs.json().info.version).toBe("1.0.0");
     expect(docs.json().paths["/v1/img/{ops}/{*}"]?.get?.parameters).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "sig", in: "query" }),

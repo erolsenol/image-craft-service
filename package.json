@@ -1,12 +1,15 @@
 {
   "name": "image-craft-service",
-  "version": "0.9.0",
+  "version": "1.0.0",
   "description": "Self-hosted image processing HTTP API",
   "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=20"
   },
+  "workspaces": [
+    "packages/client"
+  ],
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.build.json",
@@ -23,6 +26,13 @@
     "sdk:generate": "npm run openapi:generate && npm run openapi:types && python3 scripts/generate-python-sdk.py",
     "client:build": "npm run openapi:types && npm run build --prefix packages/client",
     "sdk:contract": "vitest run test/sdk-contract.test.ts",
+    "benchmark:profile": "tsx scripts/profile-transform.ts",
+    "benchmark:fixture": "node scripts/generate-benchmark-fixture.mjs",
+    "docs:dev": "vitepress dev docs-site",
+    "docs:build": "vitepress build docs-site",
+    "docs:preview": "vitepress preview docs-site",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
     "prepack": "rm -rf dist && npm run build",
     "prepublishOnly": "npm run lint && npm run typecheck && npm test && npm run build"
   },
@@ -49,6 +59,7 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@changesets/cli": "^3.0.3",
     "@types/archiver": "^8.0.0",
     "@types/node": "^22.13.10",
     "@types/pngjs": "^6.0.5",
@@ -61,8 +72,10 @@
     "pixelmatch": "^7.2.0",
     "pngjs": "^7.0.0",
     "prettier": "^3.5.3",
+    "react": "^19.3.0",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",
+    "vitepress": "^1.6.4",
     "vitest": "^4.1.11"
   },
   "main": "./dist/server.js",
@@ -76,5 +89,9 @@
     "src/plugins/README.md",
     "LICENSE",
     "CHANGELOG.md"
-  ]
+  ],
+  "overrides": {
+    "vite": "^6.4.3",
+    "esbuild": "^0.25.12"
+  }
 }

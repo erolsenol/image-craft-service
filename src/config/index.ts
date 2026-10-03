@@ -147,6 +147,8 @@ export const envSchema = z
       .positive()
       .max(4)
       .default(2),
+    SHARP_CONCURRENCY: z.coerce.number().int().positive().max(8).default(2),
+    SHARP_CACHE_MEMORY_MB: z.coerce.number().int().min(16).max(256).default(32),
     MAX_OPS_CHAIN: z.coerce.number().int().positive().max(50).default(20),
     API_KEYS: z.string().default("").refine(validateApiKeyDefinitions, {
       message:

@@ -21,6 +21,7 @@ import { fetchRemoteImage } from "../security/ssrf.js";
 import { authenticateApiKey, requiredApiScope } from "../security/api-keys.js";
 import { ServiceMetrics } from "../observability/metrics.js";
 import { supportsPresignedUploads } from "../storage/presigned-upload-storage.js";
+import sharp from "sharp";
 
 export interface AppDependencies {
   remoteImageFetcher?: typeof fetchRemoteImage;
@@ -33,6 +34,8 @@ export async function createApp(
   plugins?: PluginRegistry,
   dependencies: AppDependencies = {},
 ) {
+  sharp.concurrency(config.SHARP_CONCURRENCY);
+  sharp.cache({ memory: config.SHARP_CACHE_MEMORY_MB, files: 0, items: 100 });
   const app = Fastify({
     logger: {
       level: config.NODE_ENV === "development" ? "debug" : "info",
@@ -277,7 +280,7 @@ export async function createApp(
     openapi: {
       info: {
         title: "Image Craft Service",
-        version: "0.9.0",
+        version: "1.0.0",
         description: "Self-hosted image processing HTTP API",
       },
       servers: [{ url: "/" }],

@@ -5,11 +5,10 @@
 Build and run with the disk adapter:
 
 ```sh
-docker build -t image-craft-service:0.9.0 .
 docker run --rm -p 3000:3000 \
   -e STORAGE_DRIVER=disk \
   -v image-cache:/var/cache/image-craft \
-  image-craft-service:0.9.0
+  ghcr.io/erolsenol/image-craft-service:1.0.0
 ```
 
 To use S3-compatible storage, pass `STORAGE_DRIVER=s3`, `S3_BUCKET`, and `S3_REGION`. Set `S3_ENDPOINT`, `S3_ACCESS_KEY_ID`, and `S3_SECRET_ACCESS_KEY` for Cloudflare R2 or MinIO. AWS can use its default credential chain, including task or instance roles. `S3_FORCE_PATH_STYLE=true` is recommended for MinIO and R2.
@@ -33,8 +32,8 @@ The chart under [deploy/helm/image-craft-service](../deploy/helm/image-craft-ser
 
 ```sh
 helm upgrade --install image-craft ./deploy/helm/image-craft-service \
-  --set image.repository=registry.example.com/image-craft-service \
-  --set image.tag=0.9.0 \
+  --set image.repository=ghcr.io/erolsenol/image-craft-service \
+  --set image.tag=1.0.0 \
   --set env.STORAGE_DRIVER=s3 \
   --set env.S3_BUCKET=image-craft \
   --set env.S3_REGION=us-east-1 \

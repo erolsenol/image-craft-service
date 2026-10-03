@@ -36,13 +36,10 @@ curl -X POST http://localhost:3000/v1/transform \
 
 ## Quick start
 
-Requires Docker. Start the API from a local checkout:
+Start the published v1.0.0 image (multi-architecture `amd64` and `arm64`):
 
 ```sh
-git clone https://github.com/erolsenol/image-craft-service.git
-cd image-craft-service
-docker build -t image-craft-service .
-docker run --rm -p 3000:3000 image-craft-service
+docker run --rm -p 3000:3000 ghcr.io/erolsenol/image-craft-service:1.0.0
 ```
 
 Open [localhost:3000/docs](http://localhost:3000/docs) for interactive API docs. For local development with Node.js 20+, use `npm ci && npm run dev`.
@@ -102,7 +99,7 @@ The command prints the signed URL with `sig` and `expires` query parameters. Use
 
 ## Benchmarks
 
-No benchmark results are published yet. Performance depends on the image, operation chain, hardware, and concurrency settings. A future benchmark will include its dataset, environment, and reproducible commands.
+We profile the engine and publish a reproducible k6 comparison methodology. The recorded local profile and raw-result status are in [docs/benchmarks.md](docs/benchmarks.md). Cross-project numbers are clearly marked unavailable until all services can be measured against the same image and host.
 
 ## How it compares
 
@@ -133,7 +130,7 @@ Choose based on your runtime, deployment model, and required transforms. This pr
 
 The checked-in [OpenAPI document](openapi/openapi.json) is the source for generated TypeScript types and the Python route contract. Run `npm run sdk:generate` after an API schema change; CI checks that the generated files match the live Fastify specification.
 
-SDK publishing uses GitHub OIDC. Configure npm Trusted Publishing for `erolsenol/image-craft-service` and PyPI Trusted Publishing for the `pypi` GitHub environment before publishing a `v0.9.x` GitHub release. See [SDK publishing](docs/sdk-publishing.md).
+The `/v1` API is stable from v1.0.0; see the [compatibility and deprecation policy](docs/api-stability.md) and [upgrade guide](docs/upgrade-v1.md). SDK publishing uses GitHub OIDC; see [SDK publishing](docs/sdk-publishing.md). Container signatures and SBOMs are attached to GitHub releases; see [licensing notes](docs/licensing.md).
 
 For the remote transform endpoint, OpenAPI documents `sig`, `expires`, `If-None-Match`, and the `X-Cache`, `ETag`, and `Cache-Control` response headers.
 
@@ -254,6 +251,8 @@ All settings are environment variables validated at startup. See [.env.example](
 | `REMOTE_TRANSFORM_RATE_LIMIT`                   | `60`                               | Remote transforms allowed per IP per window                            |
 | `REMOTE_TRANSFORM_RATE_WINDOW_MS`               | `60000`                            | Remote transform rate-limit window in milliseconds                     |
 | `IMAGE_PROCESSING_CONCURRENCY`                  | `2`                                | Concurrent image and plugin operations                                 |
+| `SHARP_CONCURRENCY`                             | `2`                                | libvips worker threads per image                                       |
+| `SHARP_CACHE_MEMORY_MB`                         | `32`                               | Per-process libvips operation cache memory budget                      |
 | `MAX_OPS_CHAIN`                                 | `20`                               | Maximum operations accepted in one transform chain                     |
 | `ALLOWED_HOSTS`                                 | unset                              | Optional comma-separated remote host allowlist                         |
 | `SIGNING_SECRET`                                | unset                              | Require signed remote transform URLs                                   |
@@ -323,6 +322,8 @@ Set `CORS_ORIGINS` to exact origins such as `https://app.example.com`; requests 
 
 See [docs/deployment.md](docs/deployment.md) for Docker, Kubernetes/Helm, Fly.io, and Railway recipes. Use object storage for persistent cache and batch files on platforms where local filesystems are ephemeral.
 
+The [documentation site](https://erolsenol.github.io/image-craft-service/) covers getting started, API, configuration, deployment, plugins, FAQ, and security. [API stability](docs/api-stability.md) and the [v1 upgrade guide](docs/upgrade-v1.md) describe compatibility changes.
+
 ## Roadmap
 
 - More first-party plugins and model worker recipes
@@ -332,4 +333,4 @@ See [docs/deployment.md](docs/deployment.md) for Docker, Kubernetes/Helm, Fly.io
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+The service code is MIT licensed. Third-party packages keep their own licenses; see [Sharp/libvips notices and the dependency audit](docs/licensing.md) and [LICENSE](LICENSE).

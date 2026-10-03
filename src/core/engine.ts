@@ -62,8 +62,9 @@ export async function transformImage(
     }
   }
 
-  const oriented = await inputImage.rotate().toBuffer();
-  let image = sharp(oriented, { limitInputPixels: maxPixels, failOn: "error" });
+  // Keep EXIF orientation in the libvips pipeline; materializing an oriented PNG
+  // here forced every transform through an extra full-image encode/decode.
+  let image = inputImage.rotate();
   const hasAutoFormat = operations.some(
     (operation) => operation.op === "format" && operation.format === "auto",
   );
@@ -228,21 +229,35 @@ export async function transformImage(
     }
   }
 
-  let { data, info } = await image.png().toBuffer({ resolveWithObject: true });
+  let formatted: { data: Buffer; info: OutputInfo };
   if (roundedRadius !== undefined) {
+    let { data, info } = await image
+      .png()
+      .toBuffer({ resolveWithObject: true });
     const mask = roundedCornersSvg(info.width, info.height, roundedRadius);
     data = await sharp(data)
       .composite([{ input: mask, blend: "dest-in" }])
       .png()
       .toBuffer();
+    if (info.width > maxDimension || info.height > maxDimension)
+      throw new AppError("Output dimensions exceed limit", 413);
+    formatted = await sharp(data, { limitInputPixels: maxPixels })
+      .toFormat(outputFormat as keyof FormatEnum, {
+        ...(outputQuality === undefined ? {} : { quality: outputQuality }),
+      })
+      .toBuffer({ resolveWithObject: true });
+  } else {
+    formatted = await image
+      .toFormat(outputFormat as keyof FormatEnum, {
+        ...(outputQuality === undefined ? {} : { quality: outputQuality }),
+      })
+      .toBuffer({ resolveWithObject: true });
   }
-  if (info.width > maxDimension || info.height > maxDimension)
+  if (
+    formatted.info.width > maxDimension ||
+    formatted.info.height > maxDimension
+  )
     throw new AppError("Output dimensions exceed limit", 413);
-  const formatted = await sharp(data, { limitInputPixels: maxPixels })
-    .toFormat(outputFormat as keyof FormatEnum, {
-      ...(outputQuality === undefined ? {} : { quality: outputQuality }),
-    })
-    .toBuffer({ resolveWithObject: true });
   const actualFormat = formatted.info.format;
   const contentType = contentTypes[outputFormat] ?? contentTypes[actualFormat];
   if (!contentType) throw new AppError("Unsupported output format", 400);
