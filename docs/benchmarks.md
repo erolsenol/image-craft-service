@@ -27,7 +27,9 @@ With Sharp concurrency and cache settings held at the v1.0.0 defaults, the profi
 
 ## Reproduce the HTTP comparison
 
-Install [k6](https://grafana.com/docs/k6/latest/set-up/install-k6/). Run image-craft-service, imgproxy, and Thumbor on the same machine with the same resource limits. Set `SOURCE_URL` to one stable, publicly reachable JPEG or PNG; all three services must fetch those exact bytes. image-craft-service correctly blocks private and loopback sources, so a local-only fixture URL is not valid. The k6 script adds a unique query parameter to every source URL, keeping each iteration a transform/cache miss across services.
+Install [k6](https://grafana.com/docs/k6/latest/set-up/install-k6/). Run image-craft-service, imgproxy, and Thumbor on the same machine with the same resource limits. Set `SOURCE_URL` to the repository's stable, publicly reachable `docs/benchmark-assets/benchmark.jpg`; all services fetch the exact same bytes. Its SHA-256 and size are recorded with the raw results. The source is JPEG so resize preserves the same output format across services. WebP and AVIF use quality 75. image-craft-service correctly blocks private and loopback sources, so a local-only fixture URL is not valid. The k6 script adds a unique query parameter to every source URL, keeping each iteration a transform/cache miss across services.
+
+The benchmark service must allow at least 16 simultaneous requests and more than 60 requests per minute. For image-craft-service, set `CONCURRENCY_LIMIT=16`, `API_RATE_LIMIT=10000`, `REMOTE_TRANSFORM_RATE_LIMIT=10000`, and `MAX_UPLOAD_BYTES=16777216` (the Zod config caps their product at 256 MiB). Keep these benchmark-only limits separate from production settings. All three containers use 2 CPUs and 2 GiB memory; the full Colima VM has 4 CPUs and 6 GiB.
 
 Before each k6 run, export exactly one target base URL, `IMAGE_CRAFT_URL`, `IMGPROXY_URL`, or `THUMBOR_URL`, plus `SOURCE_URL`. Then run the matrix:
 

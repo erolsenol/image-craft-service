@@ -1,2 +1,4 @@
 # Helm templates contain Go template syntax and are not plain YAML.
 deploy/helm/**/templates/**
+# Keep raw k6 summary exports byte-for-byte as emitted by k6.
+docs/benchmark-results/http/**

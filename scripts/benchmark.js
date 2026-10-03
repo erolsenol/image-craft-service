@@ -19,16 +19,17 @@ function requestUrl() {
   const separator = source.includes("?") ? "&" : "?";
   const benchmarkSource = `${source}${separator}_bench=${__VU}-${__ITER}`;
   if (target === "image-craft") {
-    const operations = format === "resize" ? "w_800" : `w_800,f_${format}`;
+    const operations = format === "resize" ? "w_800" : `w_800,f_${format},q_75`;
     const pathSource = benchmarkSource.replace("?", "%3F");
     return `${base}/v1/img/${operations}/${pathSource}`;
   }
   if (target === "imgproxy") {
     const operations = ["rs:fit:800:0"];
-    if (format !== "resize") operations.push(`format:${format}`);
+    if (format !== "resize") operations.push(`format:${format}`, "quality:75");
     return `${base}/insecure/${operations.join("/")}/plain/${encodeURIComponent(benchmarkSource)}`;
   }
-  const filters = format === "resize" ? "" : `/filters:format(${format})`;
+  const filters =
+    format === "resize" ? "" : `/filters:quality(75):format(${format})`;
   return `${base}/unsafe/800x0${filters}/${encodeURIComponent(benchmarkSource)}`;
 }
 

@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import sharp from "sharp";
 
-const destination = "docs/benchmark-assets/benchmark.png";
+const destination = "docs/benchmark-assets/benchmark.jpg";
 await mkdir("docs/benchmark-assets", { recursive: true });
 await sharp({
   create: {
@@ -11,6 +11,6 @@ await sharp({
     background: { r: 120, g: 80, b: 200 },
   },
 })
-  .png({ compressionLevel: 9 })
+  .jpeg({ quality: 90, chromaSubsampling: "4:4:4" })
   .toFile(destination);
 console.log(`Generated ${destination}`);
