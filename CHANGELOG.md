@@ -9,7 +9,7 @@ All notable changes to this project are documented here.
 - Declared `/v1` stable with a documented compatibility/deprecation policy and a 0.9.x upgrade guide.
 - Added a VitePress documentation site and GitHub Pages deployment for setup, API, configuration, deployment, plugins, FAQ, and security guides.
 - Added Changesets release PR automation and a release workflow for signed multi-architecture GHCR images with SPDX SBOM attestations.
-- Added reproducible k6 comparison scripts and recorded the local transform-engine profile. Cross-project HTTP results remain unpublished until a controlled three-service run is available.
+- Added reproducible k6 comparison scripts, a local transform-engine profile, and raw three-service HTTP results. The published run shows image-craft-service slower than imgproxy and Thumbor across the tested operations and load levels.
 - Added a production dependency/license inventory covering Sharp and bundled libvips terms.
 - Fixed pinned HTTPS fetches for Node's multi-address DNS callback mode; the regression test covers both lookup callback shapes.
 

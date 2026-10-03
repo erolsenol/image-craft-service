@@ -99,7 +99,7 @@ The command prints the signed URL with `sig` and `expires` query parameters. Use
 
 ## Benchmarks
 
-We profile the engine and publish a reproducible k6 comparison methodology. The recorded local profile and raw-result status are in [docs/benchmarks.md](docs/benchmarks.md). Cross-project numbers are clearly marked unavailable until all services can be measured against the same image and host.
+We profile the engine and publish reproducible k6 comparisons. Results and all raw summary files are in [docs/benchmarks.md](docs/benchmarks.md). In the recorded two-CPU HTTP run, image-craft-service was slower than imgproxy and Thumbor for resize, WebP, and AVIF; the local engine profile does not represent remote-fetch endpoint throughput.
 
 ## How it compares
 
