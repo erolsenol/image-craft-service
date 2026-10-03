@@ -30,7 +30,7 @@ spec:
     spec:
       containers:
         - name: api
-          image: registry.example.com/image-craft-service:0.7.0
+          image: registry.example.com/image-craft-service:0.9.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## [0.9.0] - 2026-10-03
+
+### Added
+
+- OpenAPI-generated `image-craft-client` JavaScript/TypeScript SDK with fluent resize/format URLs, browser-compatible HMAC-signed URLs, and responsive React `<CraftImage />` helper.
+- `image-craft transform` CLI for local uploads and format conversion.
+- Python SDK source package and generated route contract from the shared OpenAPI document.
+- Next.js, Express, plain HTML, and interactive upload/preview playground examples.
+- CI contract checks for generated TypeScript/Python contracts and a trusted-publisher workflow for npm and PyPI releases.
+
 ## [0.8.0] - 2026-10-03
 
 ### Added

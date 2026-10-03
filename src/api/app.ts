@@ -277,7 +277,7 @@ export async function createApp(
     openapi: {
       info: {
         title: "Image Craft Service",
-        version: "0.8.0",
+        version: "0.9.0",
         description: "Self-hosted image processing HTTP API",
       },
       servers: [{ url: "/" }],

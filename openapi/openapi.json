@@ -1,0 +1,724 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Image Craft Service",
+    "version": "0.9.0",
+    "description": "Self-hosted image processing HTTP API"
+  },
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": { "type": "apiKey", "in": "header", "name": "X-API-Key" }
+    },
+    "schemas": {
+      "def-0": {
+        "type": "object",
+        "properties": { "error": { "type": "string" } },
+        "title": "Error"
+      }
+    }
+  },
+  "paths": {
+    "/metrics": {
+      "get": {
+        "summary": "Prometheus metrics",
+        "tags": ["Observability"],
+        "responses": {
+          "200": {
+            "description": "Prometheus text exposition format",
+            "content": {
+              "text/plain; version=0.0.4; charset=utf-8": {
+                "schema": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/{*}": {
+      "options": {
+        "parameters": [
+          {
+            "schema": { "type": "string" },
+            "in": "path",
+            "name": "*",
+            "required": true
+          }
+        ],
+        "responses": { "200": { "description": "Default Response" } }
+      }
+    },
+    "/health": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "status": { "type": "string" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "status": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "status": { "type": "string" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/transform": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file"],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Image upload"
+                  },
+                  "ops": {
+                    "type": "string",
+                    "description": "JSON operation array. Optional plugins: remove-background, upscale, auto-alt-text, nsfw-check."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Transformed image",
+            "headers": {
+              "X-Image-Alt-Text": {
+                "schema": { "schema": { "type": "string" } }
+              },
+              "X-NSFW-Score": {
+                "schema": {
+                  "schema": { "type": "number", "minimum": 0, "maximum": 1 }
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary",
+                  "description": "Transformed image"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["error", "code"],
+                  "properties": {
+                    "error": { "type": "string" },
+                    "code": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          },
+          "503": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/metadata": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file"],
+                "properties": {
+                  "file": { "type": "string", "format": "binary" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "width": { "type": "integer" },
+                    "height": { "type": "integer" },
+                    "format": { "type": "string" },
+                    "exif": { "type": "object" }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/img/{ops}/{*}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": { "type": "string" },
+            "in": "query",
+            "name": "sig",
+            "required": false,
+            "description": "HMAC-SHA256 signature"
+          },
+          {
+            "schema": { "type": "string" },
+            "in": "query",
+            "name": "expires",
+            "required": false,
+            "description": "Optional Unix expiry time in seconds"
+          },
+          {
+            "schema": { "type": "string" },
+            "in": "path",
+            "name": "ops",
+            "required": true,
+            "description": "Comma-separated operations; supports f_auto Accept negotiation, smart/focal crop, padding, effects, watermarks, and rounded corners"
+          },
+          {
+            "schema": { "type": "string" },
+            "in": "path",
+            "name": "*",
+            "required": true,
+            "description": "Remote HTTP(S) image URL or configured source alias path such as cdn:products/photo.jpg"
+          },
+          {
+            "schema": { "type": "string" },
+            "in": "header",
+            "name": "if-none-match",
+            "required": false,
+            "description": "Return 304 when the cached image matches this ETag"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Transformed image",
+            "headers": {
+              "X-Cache": {
+                "schema": {
+                  "schema": { "type": "string", "enum": ["HIT", "MISS"] }
+                }
+              },
+              "ETag": { "schema": { "schema": { "type": "string" } } },
+              "Cache-Control": { "schema": { "schema": { "type": "string" } } },
+              "Vary": { "schema": { "schema": { "type": "string" } } },
+              "X-Image-Alt-Text": {
+                "schema": { "schema": { "type": "string" } }
+              },
+              "X-NSFW-Score": {
+                "schema": {
+                  "schema": { "type": "number", "minimum": 0, "maximum": 1 }
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary",
+                  "description": "Transformed image"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The cached representation matches If-None-Match",
+            "headers": {
+              "X-Cache": {
+                "schema": {
+                  "schema": { "type": "string", "enum": ["HIT", "MISS"] }
+                }
+              },
+              "ETag": { "schema": { "schema": { "type": "string" } } },
+              "Cache-Control": { "schema": { "schema": { "type": "string" } } },
+              "Vary": { "schema": { "schema": { "type": "string" } } },
+              "X-Image-Alt-Text": {
+                "schema": { "schema": { "type": "string" } }
+              },
+              "X-NSFW-Score": {
+                "schema": {
+                  "schema": { "type": "number", "minimum": 0, "maximum": 1 }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          },
+          "422": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          },
+          "429": {
+            "description": "Remote transform rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          },
+          "503": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/hash/{*}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": { "type": "string" },
+            "in": "path",
+            "name": "*",
+            "required": true,
+            "description": "Remote image URL"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["hash", "width", "height"],
+                  "properties": {
+                    "hash": { "type": "string" },
+                    "width": { "type": "integer" },
+                    "height": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["error", "code"],
+                  "properties": {
+                    "error": { "type": "string" },
+                    "code": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          },
+          "429": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/uploads": {
+      "post": {
+        "responses": {
+          "201": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["fileId", "expiresIn"],
+                  "properties": {
+                    "fileId": { "type": "string" },
+                    "expiresIn": { "type": "integer" },
+                    "uploadUrl": { "type": "string", "format": "uri" },
+                    "method": { "type": "string", "enum": ["PUT"] },
+                    "headers": {
+                      "type": "object",
+                      "additionalProperties": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "error": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "error": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "error": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "error": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file"],
+                "properties": {
+                  "file": { "type": "string", "format": "binary" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/batch": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["sources", "ops"],
+                "properties": {
+                  "sources": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": { "type": "string", "maxLength": 2048 }
+                  },
+                  "ops": { "type": "array", "items": { "type": "object" } },
+                  "webhookUrl": { "type": "string", "format": "uri" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["jobId"],
+                  "properties": { "jobId": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": { "type": "string" },
+                    "code": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "error": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": { "type": "string" },
+                    "code": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "error": { "type": "string" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/jobs/{id}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f-]{36}$",
+              "maxLength": 36
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["jobId", "status", "progress", "errors"],
+                  "properties": {
+                    "jobId": { "type": "string" },
+                    "status": {
+                      "type": "string",
+                      "enum": ["queued", "active", "done", "failed"]
+                    },
+                    "progress": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 100
+                    },
+                    "completedItems": { "type": "integer" },
+                    "totalItems": { "type": "integer" },
+                    "errors": { "type": "array", "items": { "type": "object" } }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "error": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "error": { "type": "string" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/jobs/{id}/download": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f-]{36}$",
+              "maxLength": 36
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ZIP stream",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary",
+                  "description": "ZIP stream"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "error": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "error": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "error": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "error": { "type": "string" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "servers": [{ "url": "/" }],
+  "security": [{ "ApiKeyAuth": [] }]
+}

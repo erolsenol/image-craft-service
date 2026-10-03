@@ -10,3 +10,6 @@ coverage/
 .vscode/
 __pycache__/
 *.py[cod]
+packages/python/dist/
+packages/python/build/
+packages/python/*.egg-info/

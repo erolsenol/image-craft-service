@@ -1,0 +1,48 @@
+{
+  "name": "image-craft-client",
+  "version": "0.9.0",
+  "description": "Typed JavaScript and TypeScript SDK for image-craft-service",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/erolsenol/image-craft-service.git",
+    "directory": "packages/client"
+  },
+  "homepage": "https://github.com/erolsenol/image-craft-service/tree/master/packages/client",
+  "bugs": "https://github.com/erolsenol/image-craft-service/issues",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js"
+    }
+  },
+  "bin": {
+    "image-craft": "dist/cli.js"
+  },
+  "files": [
+    "dist/**",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build"
+  }
+}

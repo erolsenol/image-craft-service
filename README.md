@@ -54,6 +54,30 @@ curl -L 'http://localhost:3000/v1/img/w_400,h_300,fit_cover,f_webp/https://examp
   --output photo.webp
 ```
 
+For TypeScript, install `image-craft-client`:
+
+```sh
+npm install image-craft-client
+```
+
+```ts
+import { createCraftClient } from "image-craft-client";
+
+const craft = createCraftClient({ baseUrl: "http://localhost:3000" });
+const url = craft
+  .image("https://example.com/photo.jpg")
+  .resize(800)
+  .format("webp")
+  .url();
+const signedUrl = await craft
+  .image("https://example.com/photo.jpg")
+  .resize(800)
+  .format("webp")
+  .signedUrl(process.env.SIGNING_SECRET!, { expiresInSeconds: 3600 });
+```
+
+The Python package is `pip install image-craft-client` and provides the same builder and signed URL flow. The CLI accepts `image-craft transform photo.jpg --resize 800 --format webp`. React users can import `<CraftImage />` from `image-craft-client/react` to create width-based responsive URLs. See [`examples/`](examples/) for Next.js, Express, plain HTML, and the interactive [playground](examples/playground/README.md).
+
 Remote images must resolve to public IP addresses. See [Security](#security) before exposing the API to untrusted clients.
 
 Remote transform cache keys combine the normalized source URL, canonical operation chain, and output format. Concurrent identical misses share one fetch and transform. Responses include `X-Cache: HIT|MISS`, a content-based `ETag`, and `Cache-Control`.
@@ -106,6 +130,10 @@ Choose based on your runtime, deployment model, and required transforms. This pr
 | `GET /v1/jobs/:id/download` | Stream the completed ZIP archive                             |
 | `GET /health`, `GET /ready` | Liveness and readiness checks                                |
 | `GET /docs`                 | OpenAPI documentation and Swagger UI                         |
+
+The checked-in [OpenAPI document](openapi/openapi.json) is the source for generated TypeScript types and the Python route contract. Run `npm run sdk:generate` after an API schema change; CI checks that the generated files match the live Fastify specification.
+
+SDK publishing uses GitHub OIDC. Configure npm Trusted Publishing for `erolsenol/image-craft-service` and PyPI Trusted Publishing for the `pypi` GitHub environment before publishing a `v0.9.x` GitHub release. See [SDK publishing](docs/sdk-publishing.md).
 
 For the remote transform endpoint, OpenAPI documents `sig`, `expires`, `If-None-Match`, and the `X-Cache`, `ETag`, and `Cache-Control` response headers.
 

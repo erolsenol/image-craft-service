@@ -172,7 +172,7 @@ function requestPinned(
           ),
         headers: {
           accept: "image/*",
-          "user-agent": "image-craft-service/0.8.0",
+          "user-agent": "image-craft-service/0.9.0",
           ...additionalHeaders,
         },
       },
