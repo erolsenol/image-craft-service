@@ -1,6 +1,8 @@
 import unittest
 import sys
 from pathlib import Path
+import hashlib
+import hmac
 from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -23,11 +25,17 @@ class ClientTests(unittest.TestCase):
             "secret", expires_at=2_000_000_000
         )
         query = parse_qs(urlsplit(url).query)
+        route = urlsplit(url).path.split("/")
         self.assertEqual(query["expires"], ["2000000000"])
-        self.assertEqual(
-            query["sig"][0],
-            "c3b7fe610a6e6ca32e5306e37c4308a6fde70ec1d8b99af3d778e373eb0c5366",
-        )
+        expected_signature = hmac.new(
+            b"secret",
+            b"/v1/img/w_800/https://example.com/p.jpg\n2000000000",
+            hashlib.sha256,
+        ).hexdigest()
+        self.assertEqual(route[3], expected_signature)
+        self.assertEqual(route[4], "w_800")
+        self.assertEqual(route[5], "https%3A%2F%2Fexample.com%2Fp.jpg")
+        self.assertNotIn("sig", query)
 
 
 if __name__ == "__main__":

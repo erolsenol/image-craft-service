@@ -2,7 +2,10 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/api/app.js";
-import { verifyTransformSignature } from "../src/security/signing.js";
+import {
+  createTransformSignature,
+  verifyTransformSignature,
+} from "../src/security/signing.js";
 import { createCraftClient } from "../packages/client/src/index.js";
 
 describe("OpenAPI SDK contract", () => {
@@ -19,7 +22,7 @@ describe("OpenAPI SDK contract", () => {
       await readFile(resolve("openapi/openapi.json"), "utf8"),
     ) as unknown;
     const live = app.swagger();
-    expect(live.info.version).toBe("1.0.0");
+    expect(live.info.version).toBe("1.1.0");
     expect(live.paths).toHaveProperty("/v1/img/{ops}/{*}");
     expect(live.paths).toHaveProperty("/v1/transform");
     expect(checkedIn).toEqual(live);
@@ -35,7 +38,7 @@ describe("OpenAPI SDK contract", () => {
       resolve("packages/python/image_craft_client/_openapi.py"),
       "utf8",
     );
-    expect(pythonContract).toContain("OPENAPI_VERSION = '1.0.0'");
+    expect(pythonContract).toContain("OPENAPI_VERSION = '1.1.0'");
     expect(pythonContract).toContain(
       "REMOTE_IMAGE_ROUTE = '/v1/img/{ops}/{*}'",
     );
@@ -58,14 +61,23 @@ describe("OpenAPI SDK contract", () => {
       await builder.signedUrl("contract-secret", { expiresAt: 2_000_000_000 }),
     );
     const route = decodeURIComponent(url.pathname).split("/");
-    const ops = route[3];
-    const source = new URL(route.slice(4).join("/"));
+    const signature = route[3];
+    const ops = route[4];
+    const source = new URL(route.slice(5).join("/"));
+    expect(signature).toBe(
+      createTransformSignature(
+        source,
+        ops ?? "",
+        url.searchParams.get("expires") ?? undefined,
+        "contract-secret",
+      ),
+    );
     expect(
       verifyTransformSignature(
         source,
         ops ?? "",
         url.searchParams.get("expires") ?? undefined,
-        url.searchParams.get("sig") ?? undefined,
+        signature,
         "contract-secret",
         1_900_000_000_000,
       ),
@@ -76,7 +88,12 @@ describe("OpenAPI SDK contract", () => {
         new URL("https://example.com/p.jpg"),
         "w_800",
         "2000000000",
-        "c3b7fe610a6e6ca32e5306e37c4308a6fde70ec1d8b99af3d778e373eb0c5366",
+        createTransformSignature(
+          "https://example.com/p.jpg",
+          "w_800",
+          "2000000000",
+          "secret",
+        ),
         "secret",
         1_900_000_000_000,
       ),

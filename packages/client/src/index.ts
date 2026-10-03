@@ -56,9 +56,16 @@ export class ImageBuilder {
     options: { expiresInSeconds?: number; expiresAt?: number } = {},
   ): Promise<string> {
     const expiry = resolveExpiry(options);
-    const normalizedSource = this.source;
     const operationString = this.operationTokens();
-    const payload = `${normalizedSource}\n${operationString}\n${expiry ?? ""}`;
+    const signed = new URL(this.url());
+    const prefix = "/v1/img/";
+    const prefixIndex = signed.pathname.indexOf(prefix);
+    const route = signed.pathname.slice(prefixIndex + prefix.length);
+    const separator = route.indexOf("/");
+    const rawSource = route.slice(separator + 1);
+    const normalizedSource = new URL(decodeURIComponent(rawSource)).toString();
+    const canonicalOperations = canonicalizeCompactOperations(operationString);
+    const payload = `/v1/img/${canonicalOperations}/${normalizedSource}\n${expiry ?? ""}`;
     const key = await crypto.subtle.importKey(
       "raw",
       new TextEncoder().encode(secret),
@@ -74,10 +81,10 @@ export class ImageBuilder {
     const hex = Array.from(new Uint8Array(signature), (byte) =>
       byte.toString(16).padStart(2, "0"),
     ).join("");
-    const signed = new URL(this.url());
+    signed.pathname = `${signed.pathname.slice(0, prefixIndex + prefix.length)}${hex}/${operationString}/${rawSource}`;
     if (expiry !== undefined)
       signed.searchParams.set("expires", String(expiry));
-    signed.searchParams.set("sig", hex);
+    signed.searchParams.delete("sig");
     return signed.toString();
   }
 
@@ -155,4 +162,26 @@ function normalizeSource(source: string): string {
     throw new TypeError("source must be a credential-free HTTP(S) URL");
   url.hash = "";
   return url.toString();
+}
+
+function canonicalizeCompactOperations(value: string): string {
+  const category = (key: string): string => {
+    if (["w", "h", "fit", "strategy", "fx", "fy"].includes(key))
+      return "resize";
+    if (["f", "q"].includes(key)) return "format";
+    return key;
+  };
+  const groups = new Map<string, string[]>();
+  const order: string[] = [];
+  for (const token of value.split(",")) {
+    const key = token.split("_", 1)[0] ?? token;
+    const groupName = category(key);
+    const group = groups.get(groupName);
+    if (group) group.push(token);
+    else {
+      groups.set(groupName, [token]);
+      order.push(groupName);
+    }
+  }
+  return order.flatMap((name) => groups.get(name)!.sort()).join(",");
 }

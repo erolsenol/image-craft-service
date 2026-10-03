@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildPinnedRequestOptions,
   createPinnedLookup,
   fetchRemoteImage,
   isPublicIp,
@@ -39,6 +40,23 @@ describe("SSRF IP filtering", () => {
 });
 
 describe("SSRF DNS and redirect checks", () => {
+  it("connects to the validated address while preserving virtual host and TLS SNI", () => {
+    const options = buildPinnedRequestOptions(
+      new URL("https://images.example.com:8443/path/photo.jpg?width=80"),
+      "8.8.8.8",
+      5000,
+      { authorization: "Bearer fixture", host: "attacker.example" },
+    );
+    expect(options.hostname).toBe("8.8.8.8");
+    expect(options.servername).toBe("images.example.com");
+    expect(options.port).toBe(8443);
+    expect(options.path).toBe("/path/photo.jpg?width=80");
+    expect(options.headers).toMatchObject({
+      host: "images.example.com:8443",
+      authorization: "Bearer fixture",
+    });
+  });
+
   it("returns the pinned result in both Node lookup callback shapes", () => {
     const lookupAddress = createPinnedLookup("8.8.8.8");
     lookupAddress(
@@ -177,8 +195,9 @@ describe("signed URLs", () => {
       "2000000000",
     );
     const signed = new URL(url);
-    const signature = signed.searchParams.get("sig") ?? undefined;
-    expect(signature).toBeDefined();
+    const signature = signed.pathname.split("/")[3];
+    expect(signature).toMatch(/^[a-f0-9]{64}$/u);
+    expect(signed.searchParams.get("expires")).toBe("2000000000");
     expect(
       verifyTransformSignature(
         "https://source.example/a.jpg",
@@ -237,6 +256,67 @@ describe("signed URLs", () => {
         "1000",
         undefined,
         undefined,
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects tampered sources and wrong secrets while accepting the previous secret", () => {
+    const signature = createTransformSignature(
+      "https://source.example/a.jpg",
+      "w_400,h_200,f_webp",
+      undefined,
+      "old-secret",
+    );
+
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "h_200,w_400,f_webp",
+        undefined,
+        signature,
+        "new-secret",
+        { previousSecret: "old-secret" },
+      ),
+    ).toBe(true);
+    expect(
+      verifyTransformSignature(
+        "https://source.example/b.jpg",
+        "h_200,w_400,f_webp",
+        undefined,
+        signature,
+        "new-secret",
+      ),
+    ).toBe(false);
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "h_200,w_400,f_webp",
+        undefined,
+        signature,
+        "wrong-secret",
+      ),
+    ).toBe(false);
+  });
+
+  it("requires a signature when signing is required", () => {
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "w_400",
+        undefined,
+        undefined,
+        "secret",
+        { required: true },
+      ),
+    ).toBe(false);
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "w_400",
+        undefined,
+        undefined,
+        undefined,
+        { required: true },
       ),
     ).toBe(false);
   });

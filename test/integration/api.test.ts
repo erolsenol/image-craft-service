@@ -3,7 +3,7 @@ import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../../src/api/app.js";
 import type { AppConfig } from "../../src/config/index.js";
-import { createCacheKey } from "../../src/storage/cache-key.js";
+import { createCacheKey } from "../../src/core/cache-key.js";
 import type { Storage, StorageStats } from "../../src/storage/storage.js";
 import type { PluginRegistry } from "../../src/plugins/interface.js";
 import { AppError } from "../../src/core/errors.js";
@@ -39,8 +39,11 @@ const testConfig: AppConfig = {
   ALLOWED_HOSTS: "",
   NAMED_SOURCES: {},
   SIGNING_SECRET: undefined,
+  SIGNING_SECRET_PREVIOUS: undefined,
+  SIGNING_REQUIRED: false,
   STORAGE_DRIVER: "disk",
   CACHE_DIR: "/tmp/image-craft-test-cache",
+  CACHE_ENABLED: true,
   CACHE_MAX_AGE_SECONDS: 60,
   CACHE_MAX_SIZE_BYTES: 1024 * 1024,
   S3_ENDPOINT: undefined,
@@ -266,10 +269,9 @@ describe("HTTP API", () => {
     ).toBe("binary");
     expect(docs.json().paths).toHaveProperty("/v1/hash/{*}");
     expect(docs.json().paths).toHaveProperty("/metrics");
-    expect(docs.json().info.version).toBe("1.0.0");
+    expect(docs.json().info.version).toBe("1.1.0");
     expect(docs.json().paths["/v1/img/{ops}/{*}"]?.get?.parameters).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: "sig", in: "query" }),
         expect.objectContaining({ name: "expires", in: "query" }),
         expect.objectContaining({ name: "if-none-match", in: "header" }),
       ]),
@@ -719,7 +721,7 @@ describe("HTTP API", () => {
       headers: {
         origin: "https://client.example",
         "access-control-request-method": "POST",
-        "access-control-request-headers": "content-type,x-api-key",
+        "access-control-request-headers": "content-type,x-api-key,x-cache-key",
       },
     });
     expect(preflight.statusCode).toBe(204);
@@ -869,6 +871,73 @@ describe("HTTP API", () => {
     expect(response.headers["content-type"]).toContain("image/webp");
     expect((await sharp(response.rawPayload).metadata()).width).toBe(4);
   });
+  it("caches multipart uploads only with an explicit key and revalidates ETags", async () => {
+    const uploadStorage = new MemoryStorage();
+    const server = await createApp(testConfig, uploadStorage);
+    await server.ready();
+    const form = multipart(image, {
+      ops: JSON.stringify([
+        { op: "resize", width: 4 },
+        { op: "format", format: "webp" },
+      ]),
+    });
+    const request = {
+      method: "POST" as const,
+      url: "/v1/transform",
+      headers: {
+        "content-type": form.contentType,
+        "x-cache-key": "product-card-1",
+      },
+      payload: form.payload,
+    };
+    const miss = await server.inject(request);
+    expect(miss.statusCode).toBe(200);
+    expect(miss.headers["x-cache"]).toBe("MISS");
+    expect(miss.headers.etag).toBeDefined();
+    expect(miss.headers["cache-control"]).toContain("max-age=60");
+    expect(await uploadStorage.stats()).toMatchObject({ entries: 1 });
+
+    const hit = await server.inject(request);
+    expect(hit.statusCode).toBe(200);
+    expect(hit.headers["x-cache"]).toBe("HIT");
+    expect(hit.rawPayload).toEqual(miss.rawPayload);
+    const revalidated = await server.inject({
+      ...request,
+      headers: { ...request.headers, "if-none-match": miss.headers.etag! },
+    });
+    expect(revalidated.statusCode).toBe(304);
+    expect(revalidated.rawPayload).toHaveLength(0);
+    expect(revalidated.headers["x-cache"]).toBe("HIT");
+    await server.close();
+  });
+  it("disables cache reads and writes when CACHE_ENABLED is false", async () => {
+    const disabledStorage = new MemoryStorage();
+    let fetches = 0;
+    const server = await createApp(
+      { ...testConfig, CACHE_ENABLED: false },
+      disabledStorage,
+      undefined,
+      undefined,
+      {
+        remoteImageFetcher: async () => {
+          fetches += 1;
+          return { body: image, contentType: "image/jpeg" };
+        },
+      },
+    );
+    await server.ready();
+    const url = "/v1/img/w_4/https://example.com/cache-disabled.jpg";
+    const first = await server.inject(url);
+    const second = await server.inject(url);
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(first.headers["x-cache"]).toBe("MISS");
+    expect(second.headers["x-cache"]).toBe("MISS");
+    expect(first.headers.etag).toBeDefined();
+    expect(fetches).toBe(2);
+    expect(await disabledStorage.stats()).toMatchObject({ entries: 0 });
+    await server.close();
+  });
   it("blocks loopback remote image URLs", async () => {
     const server = await app;
     const response = await server.inject(
@@ -892,7 +961,7 @@ describe("HTTP API", () => {
       { op: "format", format: "webp" },
     ] as const;
     const cachedImage = await sharp(image).resize(4).webp().toBuffer();
-    storage.values.set(createCacheKey(source, ops), cachedImage);
+    storage.values.set(createCacheKey(source, ops, "webp"), cachedImage);
 
     const response = await server.inject(
       "/v1/img/w_4,f_webp/https://example.com/photo.jpg",
@@ -949,7 +1018,11 @@ describe("HTTP API", () => {
   it("accepts signed URL requests and rejects tampering and expiry", async () => {
     const secret = "integration-test-secret";
     const server = await createApp(
-      { ...testConfig, SIGNING_SECRET: secret },
+      {
+        ...testConfig,
+        SIGNING_SECRET: "rotated-integration-secret",
+        SIGNING_SECRET_PREVIOUS: secret,
+      },
       new MemoryStorage(),
       undefined,
       undefined,
@@ -974,6 +1047,19 @@ describe("HTTP API", () => {
       (await server.inject(`${tampered.pathname}${tampered.search}`))
         .statusCode,
     ).toBe(403);
+    const tamperedSource = new URL(signed);
+    tamperedSource.pathname = tamperedSource.pathname.replace(
+      "example.com/signed.jpg",
+      "example.com/other.jpg",
+    );
+    const rejectedSource = await server.inject(
+      `${tamperedSource.pathname}${tamperedSource.search}`,
+    );
+    expect(rejectedSource.statusCode).toBe(403);
+    expect(rejectedSource.json()).toEqual({
+      error: "Invalid signature",
+      code: "SIGNATURE_INVALID",
+    });
 
     const expired = new URL(
       signTransformUrl(
@@ -982,9 +1068,36 @@ describe("HTTP API", () => {
         String(Math.floor(Date.now() / 1000) - 10),
       ),
     );
-    expect(
-      (await server.inject(`${expired.pathname}${expired.search}`)).statusCode,
-    ).toBe(403);
+    const expiredResponse = await server.inject(
+      `${expired.pathname}${expired.search}`,
+    );
+    expect(expiredResponse.statusCode).toBe(403);
+    expect(expiredResponse.json()).toEqual(rejectedSource.json());
+    await server.close();
+  });
+
+  it("rejects unsigned URL transforms when SIGNING_REQUIRED is enabled", async () => {
+    const server = await createApp(
+      { ...testConfig, SIGNING_REQUIRED: true },
+      new MemoryStorage(),
+      undefined,
+      undefined,
+      {
+        remoteImageFetcher: async () => ({
+          body: image,
+          contentType: "image/jpeg",
+        }),
+      },
+    );
+    await server.ready();
+    const response = await server.inject(
+      "/v1/img/w_4/https://example.com/unsigned.jpg",
+    );
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({
+      error: "Invalid signature",
+      code: "SIGNATURE_INVALID",
+    });
     await server.close();
   });
 

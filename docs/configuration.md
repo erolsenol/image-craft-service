@@ -29,7 +29,9 @@ before the server starts. Invalid values stop startup. See
 | `CORS_ORIGINS`                          | empty        | Comma-separated exact HTTP(S) origins                                                           |
 | `ALLOWED_HOSTS`                         | empty        | Optional comma-separated hostname allowlist for remote images                                   |
 | `NAMED_SOURCES`                         | `{}`         | JSON alias map with origins, host allowlists, and optional auth headers                         |
-| `SIGNING_SECRET`                        | unset        | HMAC secret; when set, remote transform URLs require a valid signature                          |
+| `SIGNING_SECRET`                        | unset        | Active HMAC secret for signed remote transform URLs                                             |
+| `SIGNING_SECRET_PREVIOUS`               | unset        | Previous HMAC secret accepted during key rotation                                               |
+| `SIGNING_REQUIRED`                      | `false`      | Reject unsigned remote transform URLs                                                           |
 
 ## Cache and object storage
 
@@ -39,6 +41,7 @@ before the server starts. Invalid values stop startup. See
 | `CACHE_DIR`                                 | `/tmp/image-craft-cache` | Disk adapter path                                           |
 | `CACHE_MAX_SIZE_BYTES`                      | 512 MiB                  | Disk cache maximum size                                     |
 | `CACHE_MAX_AGE_SECONDS`                     | 86,400                   | Cache TTL                                                   |
+| `CACHE_ENABLED`                             | `true`                   | Enable cache reads and writes                               |
 | `S3_ENDPOINT`                               | unset                    | S3, R2, or MinIO endpoint override                          |
 | `S3_REGION`                                 | `us-east-1`              | Bucket region (`auto` for Cloudflare R2)                    |
 | `S3_BUCKET`                                 | unset                    | Bucket name; required when using S3                         |

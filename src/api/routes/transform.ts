@@ -12,7 +12,8 @@ import type { ConcurrencyLimiter } from "../../security/concurrency.js";
 import { fetchRemoteImage } from "../../security/ssrf.js";
 import { verifyTransformSignature } from "../../security/signing.js";
 import { validateImage } from "../../security/limits.js";
-import { createCacheKey, getOutputFormat } from "../../storage/cache-key.js";
+import { createCacheKey } from "../../core/cache-key.js";
+import { getOutputFormat } from "../../storage/cache-key.js";
 import { negotiateFormat } from "../../core/engine.js";
 import type { Storage } from "../../storage/storage.js";
 import { operationsSchema, type Operation } from "../schemas/operations.js";
@@ -45,7 +46,10 @@ export async function transformRoutes(
   app.addSchema({
     $id: "Error",
     type: "object",
-    properties: { error: { type: "string" } },
+    properties: {
+      error: { type: "string" },
+      code: { type: "string" },
+    },
   });
   app.post(
     "/v1/transform",
@@ -69,16 +73,40 @@ export async function transformRoutes(
             },
           },
         },
+        headers: {
+          type: "object",
+          properties: {
+            "x-cache-key": {
+              type: "string",
+              description: "Opt in to caching this upload",
+            },
+            "if-none-match": { type: "string" },
+          },
+        },
         response: {
           200: {
             type: "string",
             format: "binary",
             description: "Transformed image",
             headers: {
+              "X-Cache": { schema: { type: "string", enum: ["HIT", "MISS"] } },
+              ETag: { schema: { type: "string" } },
+              "Cache-Control": { schema: { type: "string" } },
+              Vary: { schema: { type: "string" } },
               "X-Image-Alt-Text": { schema: { type: "string" } },
               "X-NSFW-Score": {
                 schema: { type: "number", minimum: 0, maximum: 1 },
               },
+            },
+          },
+          304: {
+            type: "null",
+            description: "The representation matches If-None-Match",
+            headers: {
+              "X-Cache": { schema: { type: "string", enum: ["HIT", "MISS"] } },
+              ETag: { schema: { type: "string" } },
+              "Cache-Control": { schema: { type: "string" } },
+              Vary: { schema: { type: "string" } },
             },
           },
           400: {
@@ -137,25 +165,108 @@ export async function transformRoutes(
           code: "OPS_CHAIN_TOO_LONG",
         });
       if (hasAutoFormat(parsed.data)) reply.header("Vary", "Accept");
-      const result = await withSpan(
-        "image.transform",
-        { "image.operation_count": parsed.data.length },
-        () =>
-          runImageOperations(
-            image,
-            parsed.data,
-            plugins,
-            config.MAX_INPUT_PIXELS,
-            config.MAX_OUTPUT_DIMENSION,
-            processingLimiter,
-            request.headers.accept,
-            (operation, seconds) =>
-              metrics?.recordOperation(operation, seconds),
-            request.id,
-          ),
+      const cacheKeyHeader = request.headers["x-cache-key"];
+      const requestedCacheKey =
+        typeof cacheKeyHeader === "string" ? cacheKeyHeader.trim() : undefined;
+      const shouldCache =
+        config.CACHE_ENABLED &&
+        requestedCacheKey !== undefined &&
+        requestedCacheKey.length > 0 &&
+        requestedCacheKey.length <= 512;
+      const outputFormat = outputFormatForRequest(
+        parsed.data,
+        request.headers.accept,
       );
+      const inputDigest = createHash("sha256").update(image).digest("hex");
+      const key = shouldCache
+        ? createCacheKey(
+            new URL(`https://upload.invalid/${inputDigest}`),
+            parsed.data,
+            outputFormat,
+            `upload:${requestedCacheKey}`,
+          )
+        : undefined;
+      reply.header(
+        "Cache-Control",
+        `public, max-age=${config.CACHE_MAX_AGE_SECONDS}`,
+      );
+      const metadataPlugin = parsed.data.some(
+        (operation) =>
+          operation.op === "plugin" &&
+          ["auto-alt-text", "nsfw-check"].includes(operation.name),
+      );
+      const cached =
+        key && !metadataPlugin ? await storage.get(key) : undefined;
+      const wasCacheHit = cached !== undefined;
+      reply.header("X-Cache", wasCacheHit ? "HIT" : "MISS");
+      if (key && !metadataPlugin)
+        metrics?.recordCacheResult(wasCacheHit ? "HIT" : "MISS");
+
+      const runTransform = async () => {
+        if (key && !metadataPlugin) {
+          const concurrentCacheValue = await storage.get(key);
+          if (concurrentCacheValue !== undefined)
+            return {
+              buffer: concurrentCacheValue,
+              contentType:
+                outputFormat === "original"
+                  ? "application/octet-stream"
+                  : contentTypeFor(outputFormat),
+            };
+        }
+        const result = await withSpan(
+          "image.transform",
+          { "image.operation_count": parsed.data.length },
+          () =>
+            runImageOperations(
+              image!,
+              parsed.data,
+              plugins,
+              config.MAX_INPUT_PIXELS,
+              config.MAX_OUTPUT_DIMENSION,
+              processingLimiter,
+              request.headers.accept,
+              (operation, seconds) =>
+                metrics?.recordOperation(operation, seconds),
+              request.id,
+            ),
+        );
+        if (key && !metadataPlugin)
+          await withSpan("image.cache.set", { "cache.key": key }, () =>
+            storage.set(key, result.buffer, config.CACHE_MAX_AGE_SECONDS),
+          );
+        return result;
+      };
+      const result: {
+        buffer: Buffer;
+        contentType: string;
+        metadata?: Record<string, string | number | boolean>;
+      } =
+        cached !== undefined
+          ? {
+              buffer: cached,
+              contentType:
+                outputFormat === "original"
+                  ? "application/octet-stream"
+                  : contentTypeFor(outputFormat),
+            }
+          : key
+            ? await transformFlights.run(key, runTransform)
+            : await runTransform();
       setPluginMetadataHeaders(reply, result.metadata);
-      return reply.type(result.contentType).send(result.buffer);
+      let contentType = result.contentType;
+      if (contentType === "application/octet-stream") {
+        const metadata = await sharp(result.buffer).metadata();
+        contentType =
+          metadata.format === "heif" && metadata.compression === "av1"
+            ? "image/avif"
+            : contentTypeFor(metadata.format ?? "jpeg");
+      }
+      const etag = `"${createHash("sha256").update(result.buffer).digest("base64url")}"`;
+      reply.header("ETag", etag);
+      if (matchesEtag(request.headers["if-none-match"], etag))
+        return reply.code(304).send();
+      return reply.type(contentType).send(result.buffer);
     },
   );
 
@@ -233,7 +344,7 @@ export async function transformRoutes(
             ops: {
               type: "string",
               description:
-                "Comma-separated operations; supports f_auto Accept negotiation, smart/focal crop, padding, effects, watermarks, and rounded corners",
+                "Unsigned URLs use comma-separated operations here. Signed URLs use /v1/img/<signature>/<ops>/<source>; operation parameters are canonicalized before signing.",
             },
             "*": {
               type: "string",
@@ -245,7 +356,6 @@ export async function transformRoutes(
         querystring: {
           type: "object",
           properties: {
-            sig: { type: "string", description: "HMAC-SHA256 signature" },
             expires: {
               type: "string",
               description: "Optional Unix expiry time in seconds",
@@ -291,7 +401,10 @@ export async function transformRoutes(
               },
             },
           },
-          403: { $ref: "Error#" },
+          403: {
+            $ref: "Error#",
+            description: "Invalid, missing, tampered, or expired signature",
+          },
           422: { $ref: "Error#" },
           503: { $ref: "Error#" },
           429: {
@@ -308,28 +421,65 @@ export async function transformRoutes(
       },
     },
     async (request, reply) => {
+      const pathSignature = /^[a-f0-9]{64}$/iu.test(request.params.ops)
+        ? request.params.ops
+        : undefined;
+      let signature = request.query.sig;
+      let compactOperations = request.params.ops;
+      let rawSource = request.params["*"];
+      if (pathSignature) {
+        const separator = rawSource.indexOf("/");
+        if (separator < 1)
+          return reply.code(403).send({
+            error: "Invalid signature",
+            code: "SIGNATURE_INVALID",
+          });
+        signature = pathSignature;
+        compactOperations = rawSource.slice(0, separator);
+        rawSource = rawSource.slice(separator + 1);
+      }
+
       let url: string;
       try {
-        url = decodeURIComponent(request.params["*"]);
+        url = decodeURIComponent(rawSource);
       } catch {
+        if (signature || config.SIGNING_REQUIRED)
+          return reply.code(403).send({
+            error: "Invalid signature",
+            code: "SIGNATURE_INVALID",
+          });
         throw new AppError("Invalid remote URL", 400);
       }
       let signatureSource: URL;
       try {
         signatureSource = new URL(url);
       } catch {
+        if (signature || config.SIGNING_REQUIRED)
+          return reply.code(403).send({
+            error: "Invalid signature",
+            code: "SIGNATURE_INVALID",
+          });
         throw new AppError("Invalid remote URL", 400);
       }
       if (
         !verifyTransformSignature(
           signatureSource,
-          request.params.ops,
+          compactOperations,
           request.query.expires,
-          request.query.sig,
+          signature,
           config.SIGNING_SECRET,
+          {
+            required: config.SIGNING_REQUIRED,
+            ...(config.SIGNING_SECRET_PREVIOUS
+              ? { previousSecret: config.SIGNING_SECRET_PREVIOUS }
+              : {}),
+          },
         )
       )
-        return reply.code(403).send({ error: "Invalid signature" });
+        return reply.code(403).send({
+          error: "Invalid signature",
+          code: "SIGNATURE_INVALID",
+        });
       let remoteSource: ReturnType<typeof resolveImageSource>;
       try {
         remoteSource = resolveImageSource(
@@ -347,7 +497,7 @@ export async function transformRoutes(
       const source = remoteSource.url;
       let parsedOps: Operation[];
       try {
-        parsedOps = parseCompactOps(request.params.ops, config.MAX_OPS_CHAIN);
+        parsedOps = parseCompactOps(compactOperations, config.MAX_OPS_CHAIN);
       } catch (error) {
         if (error instanceof Error && error.message === "OPS_CHAIN_TOO_LONG")
           return reply.code(400).send({
@@ -384,18 +534,21 @@ export async function transformRoutes(
           operation.op === "plugin" &&
           ["auto-alt-text", "nsfw-check"].includes(operation.name),
       );
-      let output = metadataPlugin
-        ? undefined
-        : await withSpan("image.cache.get", { "cache.key": key }, () =>
-            storage.get(key),
-          );
+      let output =
+        metadataPlugin || !config.CACHE_ENABLED
+          ? undefined
+          : await withSpan("image.cache.get", { "cache.key": key }, () =>
+              storage.get(key),
+            );
       const wasCacheHit = output !== undefined;
       metrics?.recordCacheResult(wasCacheHit ? "HIT" : "MISS");
       reply.header("X-Cache", wasCacheHit ? "HIT" : "MISS");
       let contentType = contentTypeFor(outputFormat);
       if (output === undefined) {
         const transformed = await transformFlights.run(key, async () => {
-          const concurrentCacheValue = await storage.get(key);
+          const concurrentCacheValue = config.CACHE_ENABLED
+            ? await storage.get(key)
+            : undefined;
           if (concurrentCacheValue !== undefined)
             return { buffer: concurrentCacheValue, contentType };
 
@@ -432,7 +585,7 @@ export async function transformRoutes(
                 request.id,
               ),
           );
-          if (!metadataPlugin)
+          if (!metadataPlugin && config.CACHE_ENABLED)
             await withSpan("image.cache.set", { "cache.key": key }, () =>
               storage.set(key, result.buffer, config.CACHE_MAX_AGE_SECONDS),
             );

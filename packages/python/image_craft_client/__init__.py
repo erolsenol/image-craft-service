@@ -74,13 +74,19 @@ class ImageBuilder:
         if expiry is not None and not 0 < expiry <= 9_007_199_254_740_991:
             raise ValueError("expires_at must be a positive Unix timestamp")
         ops = self._ops()
+        canonical_ops = _canonicalize_ops(ops)
         canonical_expiry = str(expiry) if expiry is not None else ""
-        payload = f"{_normalize(self.source)}\n{ops}\n{canonical_expiry}".encode()
+        payload = (
+            f"/v1/img/{canonical_ops}/{_normalize(self.source)}\n{canonical_expiry}"
+        ).encode()
         signature = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
-        url = self.url()
+        url = (
+            f"{self._base_url}/v1/img/{signature}/{ops}/"
+            f"{quote(_normalize(self.source), safe='')}"
+        )
         if expiry is not None:
             url += f"?expires={expiry}"
-        return f"{url}{'&' if '?' in url else '?'}sig={signature}"
+        return url
 
 
 class CraftClient:
@@ -109,6 +115,29 @@ def _normalize(source: str) -> str:
     ) and not (parsed.scheme.lower() == "http" and parsed.port == 80):
         netloc = f"{host}:{parsed.port}"
     return urlunsplit((parsed.scheme.lower(), netloc, parsed.path or "/", parsed.query, ""))
+
+
+def _canonicalize_ops(ops: str) -> str:
+    categories = {
+        "w": "resize",
+        "h": "resize",
+        "fit": "resize",
+        "strategy": "resize",
+        "fx": "resize",
+        "fy": "resize",
+        "f": "format",
+        "q": "format",
+    }
+    groups: dict[str, list[str]] = {}
+    order: list[str] = []
+    for token in ops.split(","):
+        key = token.split("_", maxsplit=1)[0]
+        category = categories.get(key, key)
+        if category not in groups:
+            groups[category] = []
+            order.append(category)
+        groups[category].append(token)
+    return ",".join(token for category in order for token in sorted(groups[category]))
 
 
 __all__ = ["CraftClient", "ImageBuilder"]

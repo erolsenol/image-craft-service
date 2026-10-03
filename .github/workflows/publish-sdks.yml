@@ -6,6 +6,29 @@ permissions:
   contents: read
   id-token: write
 jobs:
+  service:
+    if: startsWith(github.event.release.tag_name, 'v1.')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - name: Publish service package if this version is not already on npm
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          RELEASE_VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$VERSION" != "$RELEASE_VERSION" ]]; then
+            echo "Service version $VERSION does not match release $RELEASE_VERSION"
+            exit 1
+          fi
+          if npm view "image-craft-service@$VERSION" version >/dev/null 2>&1; then
+            echo "image-craft-service@$VERSION is already published"
+          else
+            npm publish --access public --provenance
+          fi
   npm:
     if: startsWith(github.event.release.tag_name, 'v1.')
     runs-on: ubuntu-latest

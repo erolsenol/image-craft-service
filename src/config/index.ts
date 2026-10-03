@@ -203,7 +203,37 @@ export const envSchema = z
     ALLOWED_HOSTS: z.string().default(""),
     NAMED_SOURCES: namedSourcesSchema,
     SIGNING_SECRET: z.string().optional(),
+    SIGNING_SECRET_PREVIOUS: z.string().optional(),
+    SIGNING_REQUIRED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    PUBLIC_BASE_URL: z.preprocess(
+      (value) => (value === "" ? undefined : value),
+      z
+        .string()
+        .url()
+        .refine((value) => {
+          try {
+            const url = new URL(value);
+            return (
+              ["http:", "https:"].includes(url.protocol) &&
+              !url.username &&
+              !url.password &&
+              !url.search &&
+              !url.hash
+            );
+          } catch {
+            return false;
+          }
+        }, "PUBLIC_BASE_URL must be a credential-free HTTP(S) URL without query or fragment")
+        .optional(),
+    ),
     STORAGE_DRIVER: z.enum(["disk", "s3"]).default("disk"),
+    CACHE_ENABLED: z
+      .enum(["true", "false"])
+      .default("true")
+      .transform((value) => value === "true"),
     CACHE_DIR: z.string().default("/tmp/image-craft-cache"),
     CACHE_MAX_SIZE_BYTES: z.coerce
       .number()

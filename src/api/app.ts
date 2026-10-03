@@ -22,6 +22,7 @@ import { authenticateApiKey, requiredApiScope } from "../security/api-keys.js";
 import { ServiceMetrics } from "../observability/metrics.js";
 import { supportsPresignedUploads } from "../storage/presigned-upload-storage.js";
 import sharp from "sharp";
+import packageJson from "../../package.json" with { type: "json" };
 
 export interface AppDependencies {
   remoteImageFetcher?: typeof fetchRemoteImage;
@@ -111,6 +112,7 @@ export async function createApp(
           "authorization",
           "content-type",
           "if-none-match",
+          "x-cache-key",
           "x-api-key",
           "x-request-id",
         ]);
@@ -280,7 +282,7 @@ export async function createApp(
     openapi: {
       info: {
         title: "Image Craft Service",
-        version: "1.0.0",
+        version: packageJson.version,
         description: "Self-hosted image processing HTTP API",
       },
       servers: [{ url: "/" }],

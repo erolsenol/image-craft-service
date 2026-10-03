@@ -1,6 +1,6 @@
 {
   "name": "image-craft-service",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Self-hosted image processing HTTP API",
   "license": "MIT",
   "type": "module",
@@ -20,7 +20,7 @@
     "typecheck": "tsc --noEmit && tsc -p packages/client/tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "sign": "tsx src/cli/sign.ts",
+    "sign": "tsx scripts/sign.ts",
     "openapi:generate": "tsx scripts/export-openapi.ts",
     "openapi:types": "openapi-typescript openapi/openapi.json -o packages/client/src/generated.ts && prettier --write packages/client/src/generated.ts",
     "sdk:generate": "npm run openapi:generate && npm run openapi:types && python3 scripts/generate-python-sdk.py",
