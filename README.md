@@ -36,10 +36,10 @@ curl -X POST http://localhost:3000/v1/transform \
 
 ## Quick start
 
-Start the published v1.0.0 image (multi-architecture `amd64` and `arm64`):
+Start the published v1.1.0 image (multi-architecture `amd64` and `arm64`):
 
 ```sh
-docker run --rm -p 3000:3000 ghcr.io/erolsenol/image-craft-service:1.0.0
+docker run --rm -p 3000:3000 ghcr.io/erolsenol/image-craft-service:1.1.0
 ```
 
 Open [localhost:3000/docs](http://localhost:3000/docs) for interactive API docs. For local development with Node.js 20+, use `npm ci && npm run dev`.
@@ -75,9 +75,18 @@ const signedUrl = await craft
 
 The Python package is `pip install image-craft-client` and provides the same builder and signed URL flow. The CLI accepts `image-craft transform photo.jpg --resize 800 --format webp`. React users can import `<CraftImage />` from `image-craft-client/react` to create width-based responsive URLs. See [`examples/`](examples/) for Next.js, Express, plain HTML, and the interactive [playground](examples/playground/README.md).
 
-Remote images must resolve to public IP addresses. See [Security](#security) before exposing the API to untrusted clients.
+Remote images must resolve to public IP addresses. See [Security](#security) before exposing the API to untrusted clients. Set `CACHE_ENABLED=false` to disable cache reads and writes. Multipart uploads are cached only when an `X-Cache-Key` header is provided; the service also keys by file content, operations, and resolved format.
 
 Remote transform cache keys combine the normalized source URL, canonical operation chain, and output format. Concurrent identical misses share one fetch and transform. Responses include `X-Cache: HIT|MISS`, a content-based `ETag`, and `Cache-Control`.
+
+Multipart transforms opt into caching with a client-provided key; matching image bytes, operations, format, and key reuse the result:
+
+```sh
+curl -H 'X-Cache-Key: product-card-42' \
+  -F 'file=@photo.jpg' \
+  -F 'ops=[{"op":"resize","width":400},{"op":"format","format":"webp"}]' \
+  http://localhost:3000/v1/transform --output photo.webp
+```
 
 Send the ETag from the first response in `If-None-Match` to get `304 Not Modified` when the cached image is unchanged:
 
@@ -88,14 +97,34 @@ curl -i -H 'If-None-Match: "<etag-from-first-response>"' \
 
 ### Sign transform URLs
 
-Set the same `SIGNING_SECRET` on the service and when creating a signature. The helper accepts a complete `/v1/img/:ops/*src` URL; `--expires-in` adds an optional expiry in seconds.
+Set `SIGNING_SECRET` on the service and in the environment where you create a signature. `PUBLIC_BASE_URL` controls the service origin printed by the CLI; it defaults to `http://localhost:$PORT`. Signatures use the format `/v1/img/<signature>/<ops>/<source>?expires=<unix>`. `SIGNING_REQUIRED=true` rejects unsigned transforms. During rotation, set `SIGNING_SECRET_PREVIOUS` to accept links signed with the old secret.
 
 ```sh
 export SIGNING_SECRET='replace-with-a-long-random-secret'
-npm run sign -- 'http://localhost:3000/v1/img/w_400,f_webp/https://example.com/photo.jpg' --expires-in 3600
+export PUBLIC_BASE_URL='https://images.example.com'
+npm run sign -- --ops w_400,f_webp --src https://example.com/photo.jpg --ttl 3600
 ```
 
-The command prints the signed URL with `sig` and `expires` query parameters. Use that URL as usual; altered operations, source URLs, or expired signatures are rejected with `403`.
+The Node SDK creates the same signed URL:
+
+```ts
+import { createCraftClient } from "image-craft-client";
+
+const url = await createCraftClient({ baseUrl: process.env.PUBLIC_BASE_URL! })
+  .image("https://example.com/photo.jpg")
+  .resize(400)
+  .format("webp")
+  .signedUrl(process.env.SIGNING_SECRET!, { expiresInSeconds: 3600 });
+```
+
+Fetch a CLI-generated URL with curl:
+
+```sh
+SIGNED_URL="$(npm run sign -- --ops w_400,f_webp --src https://example.com/photo.jpg --ttl 3600)"
+curl -D - "$SIGNED_URL" --output photo.webp
+```
+
+Altered operations, source URLs, invalid signatures, and expired signatures all receive the same `403` response and `SIGNATURE_INVALID` code.
 
 ## Benchmarks
 
@@ -132,7 +161,7 @@ The checked-in [OpenAPI document](openapi/openapi.json) is the source for genera
 
 The `/v1` API is stable from v1.0.0; see the [compatibility and deprecation policy](docs/api-stability.md) and [upgrade guide](docs/upgrade-v1.md). SDK publishing uses GitHub OIDC; see [SDK publishing](docs/sdk-publishing.md). Container signatures and SBOMs are attached to GitHub releases; see [licensing notes](docs/licensing.md).
 
-For the remote transform endpoint, OpenAPI documents `sig`, `expires`, `If-None-Match`, and the `X-Cache`, `ETag`, and `Cache-Control` response headers.
+For the remote transform endpoint, OpenAPI documents `expires`, `If-None-Match`, and the `X-Cache`, `ETag`, and `Cache-Control` response headers.
 
 Invalid operation requests return a JSON `error` and machine-readable `code`, such as `INVALID_OPERATIONS` or `OPS_CHAIN_TOO_LONG`.
 
@@ -255,7 +284,13 @@ All settings are environment variables validated at startup. See [.env.example](
 | `SHARP_CACHE_MEMORY_MB`                         | `32`                               | Per-process libvips operation cache memory budget                      |
 | `MAX_OPS_CHAIN`                                 | `20`                               | Maximum operations accepted in one transform chain                     |
 | `ALLOWED_HOSTS`                                 | unset                              | Optional comma-separated remote host allowlist                         |
-| `SIGNING_SECRET`                                | unset                              | Require signed remote transform URLs                                   |
+| `SIGNING_SECRET`                                | unset                              | Active HMAC secret for signed remote transform URLs                    |
+| `SIGNING_SECRET_PREVIOUS`                       | unset                              | Previous HMAC secret accepted during rotation                          |
+| `SIGNING_REQUIRED`                              | `false`                            | Reject unsigned remote transform URLs                                  |
+| `PUBLIC_BASE_URL`                               | `http://localhost:$PORT`           | Public service origin used by the signed URL CLI                       |
+| `CACHE_ENABLED`                                 | `true`                             | Enable cache reads and writes                                          |
+| `CACHE_DIR`                                     | `/tmp/image-craft-cache`           | Disk cache directory                                                   |
+| `CACHE_MAX_AGE_SECONDS`                         | `86400`                            | Cache TTL and response `Cache-Control` max-age                         |
 | `CACHE_MAX_SIZE_BYTES`                          | `536870912`                        | Maximum disk cache size                                                |
 | `STORAGE_DRIVER`                                | `disk`                             | `disk` or S3-compatible `s3` for cache and batch object storage        |
 | `S3_ENDPOINT` / `S3_REGION`                     | unset / `us-east-1`                | S3 API endpoint and signing region (`auto` for Cloudflare R2)          |

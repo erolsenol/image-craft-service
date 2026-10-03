@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Image Craft Service",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "Self-hosted image processing HTTP API"
   },
   "components": {
@@ -12,7 +12,10 @@
     "schemas": {
       "def-0": {
         "type": "object",
-        "properties": { "error": { "type": "string" } },
+        "properties": {
+          "error": { "type": "string" },
+          "code": { "type": "string" }
+        },
         "title": "Error"
       }
     }
@@ -116,10 +119,33 @@
             }
           }
         },
+        "parameters": [
+          {
+            "schema": { "type": "string" },
+            "in": "header",
+            "name": "x-cache-key",
+            "required": false,
+            "description": "Opt in to caching this upload"
+          },
+          {
+            "schema": { "type": "string" },
+            "in": "header",
+            "name": "if-none-match",
+            "required": false
+          }
+        ],
         "responses": {
           "200": {
             "description": "Transformed image",
             "headers": {
+              "X-Cache": {
+                "schema": {
+                  "schema": { "type": "string", "enum": ["HIT", "MISS"] }
+                }
+              },
+              "ETag": { "schema": { "schema": { "type": "string" } } },
+              "Cache-Control": { "schema": { "schema": { "type": "string" } } },
+              "Vary": { "schema": { "schema": { "type": "string" } } },
               "X-Image-Alt-Text": {
                 "schema": { "schema": { "type": "string" } }
               },
@@ -137,6 +163,19 @@
                   "description": "Transformed image"
                 }
               }
+            }
+          },
+          "304": {
+            "description": "The representation matches If-None-Match",
+            "headers": {
+              "X-Cache": {
+                "schema": {
+                  "schema": { "type": "string", "enum": ["HIT", "MISS"] }
+                }
+              },
+              "ETag": { "schema": { "schema": { "type": "string" } } },
+              "Cache-Control": { "schema": { "schema": { "type": "string" } } },
+              "Vary": { "schema": { "schema": { "type": "string" } } }
             }
           },
           "400": {
@@ -223,13 +262,6 @@
           {
             "schema": { "type": "string" },
             "in": "query",
-            "name": "sig",
-            "required": false,
-            "description": "HMAC-SHA256 signature"
-          },
-          {
-            "schema": { "type": "string" },
-            "in": "query",
             "name": "expires",
             "required": false,
             "description": "Optional Unix expiry time in seconds"
@@ -239,7 +271,7 @@
             "in": "path",
             "name": "ops",
             "required": true,
-            "description": "Comma-separated operations; supports f_auto Accept negotiation, smart/focal crop, padding, effects, watermarks, and rounded corners"
+            "description": "Unsigned URLs use comma-separated operations here. Signed URLs use /v1/img/<signature>/<ops>/<source>; operation parameters are canonicalized before signing."
           },
           {
             "schema": { "type": "string" },
@@ -309,7 +341,7 @@
             }
           },
           "403": {
-            "description": "Default Response",
+            "description": "Invalid, missing, tampered, or expired signature",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/def-0" }

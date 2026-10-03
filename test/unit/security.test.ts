@@ -177,8 +177,9 @@ describe("signed URLs", () => {
       "2000000000",
     );
     const signed = new URL(url);
-    const signature = signed.searchParams.get("sig") ?? undefined;
-    expect(signature).toBeDefined();
+    const signature = signed.pathname.split("/")[3];
+    expect(signature).toMatch(/^[a-f0-9]{64}$/u);
+    expect(signed.searchParams.get("expires")).toBe("2000000000");
     expect(
       verifyTransformSignature(
         "https://source.example/a.jpg",
@@ -237,6 +238,67 @@ describe("signed URLs", () => {
         "1000",
         undefined,
         undefined,
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects tampered sources and wrong secrets while accepting the previous secret", () => {
+    const signature = createTransformSignature(
+      "https://source.example/a.jpg",
+      "w_400,h_200,f_webp",
+      undefined,
+      "old-secret",
+    );
+
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "h_200,w_400,f_webp",
+        undefined,
+        signature,
+        "new-secret",
+        { previousSecret: "old-secret" },
+      ),
+    ).toBe(true);
+    expect(
+      verifyTransformSignature(
+        "https://source.example/b.jpg",
+        "h_200,w_400,f_webp",
+        undefined,
+        signature,
+        "new-secret",
+      ),
+    ).toBe(false);
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "h_200,w_400,f_webp",
+        undefined,
+        signature,
+        "wrong-secret",
+      ),
+    ).toBe(false);
+  });
+
+  it("requires a signature when signing is required", () => {
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "w_400",
+        undefined,
+        undefined,
+        "secret",
+        { required: true },
+      ),
+    ).toBe(false);
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "w_400",
+        undefined,
+        undefined,
+        undefined,
+        { required: true },
       ),
     ).toBe(false);
   });

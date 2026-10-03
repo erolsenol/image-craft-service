@@ -172,7 +172,11 @@ export interface paths {
     post: {
       parameters: {
         query?: never;
-        header?: never;
+        header?: {
+          /** @description Opt in to caching this upload */
+          "x-cache-key"?: string;
+          "if-none-match"?: string;
+        };
         path?: never;
         cookie?: never;
       };
@@ -193,6 +197,10 @@ export interface paths {
         /** @description Transformed image */
         200: {
           headers: {
+            "X-Cache"?: unknown;
+            ETag?: unknown;
+            "Cache-Control"?: unknown;
+            Vary?: unknown;
             "X-Image-Alt-Text"?: unknown;
             "X-NSFW-Score"?: unknown;
             [name: string]: unknown;
@@ -200,6 +208,17 @@ export interface paths {
           content: {
             "application/json": string;
           };
+        };
+        /** @description The representation matches If-None-Match */
+        304: {
+          headers: {
+            "X-Cache"?: unknown;
+            ETag?: unknown;
+            "Cache-Control"?: unknown;
+            Vary?: unknown;
+            [name: string]: unknown;
+          };
+          content?: never;
         };
         /** @description Default Response */
         400: {
@@ -305,8 +324,6 @@ export interface paths {
     get: {
       parameters: {
         query?: {
-          /** @description HMAC-SHA256 signature */
-          sig?: string;
           /** @description Optional Unix expiry time in seconds */
           expires?: string;
         };
@@ -315,7 +332,7 @@ export interface paths {
           "if-none-match"?: string;
         };
         path: {
-          /** @description Comma-separated operations; supports f_auto Accept negotiation, smart/focal crop, padding, effects, watermarks, and rounded corners */
+          /** @description Unsigned URLs use comma-separated operations here. Signed URLs use /v1/img/<signature>/<ops>/<source>; operation parameters are canonicalized before signing. */
           ops: string;
           /** @description Remote HTTP(S) image URL or configured source alias path such as cdn:products/photo.jpg */
           "*": string;
@@ -352,7 +369,7 @@ export interface paths {
           };
           content?: never;
         };
-        /** @description Default Response */
+        /** @description Invalid, missing, tampered, or expired signature */
         403: {
           headers: {
             [name: string]: unknown;
@@ -813,6 +830,7 @@ export interface components {
     /** Error */
     "def-0": {
       error?: string;
+      code?: string;
     };
   };
   responses: never;

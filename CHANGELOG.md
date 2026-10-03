@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+## [1.1.0] - 2026-10-03
+
+### Added
+
+- Added a disk-backed storage adapter with TTL, size-bounded LRU eviction, atomic writes, and restart recovery.
+- Added canonical SHA-256 transform cache keys and request coalescing for concurrent identical transforms.
+- Added cache hit/miss headers, ETags, conditional `304` responses, configurable cache control, and cache bypass support.
+- Added path-based HMAC-SHA256 signed URLs, secret rotation, an optional signed-request requirement, and the `npm run sign` CLI.
+- Updated the OpenAPI document and JavaScript/Python SDK signing contract.
+
+### Added
+
+- Integrated storage cache reads, writes, and single-flight transforms into remote URL and multipart transform endpoints. Upload caching is opt-in through `X-Cache-Key`.
+- Added configurable cache disabling with `CACHE_ENABLED=false`, `X-Cache`, content ETags, conditional `304` responses, and `Cache-Control` headers for both transform endpoints.
+- Updated the OpenAPI document and generated SDK contracts for upload cache headers and responses.
+- Added path-based HMAC-SHA256 URL signatures, required-signature mode, generic invalid-signature responses, and previous-secret rotation support.
+
 ## [1.0.0] - 2026-10-03
 
 ### Added
@@ -91,7 +110,7 @@ All notable changes to this project are documented here.
 - Storage statistics and normalized cache keys that include the output format.
 - Single-flight handling for concurrent identical remote image transforms.
 - Content-based ETags, `If-None-Match` responses, and documented cache headers.
-- Expiring HMAC-SHA256 signed transform URLs and the `npm run sign` helper.
+- Expiring HMAC-SHA256 path-signed transform URLs, previous-secret rotation, optional required signatures, and `npm run sign -- --ops ... --src ... [--ttl ...]`.
 - Per-IP rate limiting for remote URL transforms, configurable through environment variables.
 
 ## [0.1.5] - 2026-10-02
