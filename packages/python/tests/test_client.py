@@ -29,6 +29,19 @@ class ClientTests(unittest.TestCase):
             "c3b7fe610a6e6ca32e5306e37c4308a6fde70ec1d8b99af3d778e373eb0c5366",
         )
 
+    def test_signed_url_with_expires_in_seconds(self):
+        url = (
+            CraftClient("https://images.example.com")
+            .image("https://example.com/photo.jpg")
+            .resize(800)
+            .format("webp")
+            .signed_url("secret", expires_in_seconds=3600)
+        )
+        query = parse_qs(urlsplit(url).query)
+        self.assertIn("expires", query)
+        self.assertIn("sig", query)
+        self.assertTrue(int(query["expires"][0]) > 0)
+
 
 if __name__ == "__main__":
     unittest.main()
