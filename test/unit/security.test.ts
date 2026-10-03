@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildPinnedRequestOptions,
   createPinnedLookup,
   fetchRemoteImage,
   isPublicIp,
@@ -39,6 +40,23 @@ describe("SSRF IP filtering", () => {
 });
 
 describe("SSRF DNS and redirect checks", () => {
+  it("connects to the validated address while preserving virtual host and TLS SNI", () => {
+    const options = buildPinnedRequestOptions(
+      new URL("https://images.example.com:8443/path/photo.jpg?width=80"),
+      "8.8.8.8",
+      5000,
+      { authorization: "Bearer fixture", host: "attacker.example" },
+    );
+    expect(options.hostname).toBe("8.8.8.8");
+    expect(options.servername).toBe("images.example.com");
+    expect(options.port).toBe(8443);
+    expect(options.path).toBe("/path/photo.jpg?width=80");
+    expect(options.headers).toMatchObject({
+      host: "images.example.com:8443",
+      authorization: "Bearer fixture",
+    });
+  });
+
   it("returns the pinned result in both Node lookup callback shapes", () => {
     const lookupAddress = createPinnedLookup("8.8.8.8");
     lookupAddress(

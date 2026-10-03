@@ -5,6 +5,7 @@ import { request as httpsRequest } from "node:https";
 import type { RequestOptions } from "node:https";
 import type { IncomingHttpHeaders } from "node:http";
 import ipaddr from "ipaddr.js";
+import { isIP } from "node:net";
 
 export function isPublicIp(address: string): boolean {
   if (!ipaddr.isValid(address)) return false;
@@ -152,6 +153,33 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   });
 }
 
+export function buildPinnedRequestOptions(
+  url: URL,
+  address: string,
+  timeoutMs: number,
+  additionalHeaders?: Readonly<Record<string, string>>,
+): RequestOptions {
+  const options: RequestOptions = {
+    protocol: url.protocol,
+    hostname: address,
+    ...(url.port ? { port: Number(url.port) } : {}),
+    path: `${url.pathname}${url.search}`,
+    method: "GET",
+    timeout: timeoutMs,
+    headers: {
+      accept: "image/*",
+      "user-agent": "image-craft-service/1.1.0",
+      ...additionalHeaders,
+      host: url.host,
+    },
+  };
+  const tlsHostname = url.hostname.replace(/^\[|\]$/g, "");
+  if (url.protocol === "https:" && isIP(tlsHostname) === 0) {
+    options.servername = tlsHostname;
+  }
+  return options;
+}
+
 function requestPinned(
   url: URL,
   address: string,
@@ -162,16 +190,7 @@ function requestPinned(
   return new Promise((resolve, reject) => {
     const requestFn = url.protocol === "https:" ? httpsRequest : httpRequest;
     const request = requestFn(
-      url,
-      {
-        timeout: timeoutMs,
-        lookup: createPinnedLookup(address),
-        headers: {
-          accept: "image/*",
-          "user-agent": "image-craft-service/1.0.0",
-          ...additionalHeaders,
-        },
-      },
+      buildPinnedRequestOptions(url, address, timeoutMs, additionalHeaders),
       (response) => {
         if (
           response.statusCode &&
