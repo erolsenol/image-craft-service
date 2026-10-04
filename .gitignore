@@ -10,6 +10,7 @@ coverage/
 /.vitepress/
 docs-site/.vitepress/dist/
 docs-site/.vitepress/cache/
+docs-site/.vitepress/.temp/
 .DS_Store
 .vscode/
 __pycache__/
