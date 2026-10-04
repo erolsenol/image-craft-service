@@ -12,6 +12,7 @@ const allowedMimeTypes = new Set([
 export async function validateImage(
   buffer: Buffer,
   maxPixels: number,
+  maxFrames = 100,
 ): Promise<string> {
   const mime = sniffImageMime(buffer);
   if (!mime || !allowedMimeTypes.has(mime))
@@ -21,6 +22,7 @@ export async function validateImage(
     metadata = await sharp(buffer, {
       limitInputPixels: maxPixels,
       failOn: "error",
+      animated: true,
     }).metadata();
   } catch (error) {
     if (
@@ -32,10 +34,15 @@ export async function validateImage(
   }
   assertDecodedPixelBudget(
     metadata.width ?? 0,
-    metadata.pageHeight ?? metadata.height ?? 0,
+    metadata.pageHeight ??
+      (metadata.pages && metadata.pages > 1
+        ? Math.floor((metadata.height ?? 0) / metadata.pages)
+        : (metadata.height ?? 0)),
     metadata.pages ?? 1,
     maxPixels,
   );
+  if ((metadata.pages ?? 1) > maxFrames)
+    throw new AppError("Image exceeds animation frame limit", 413);
   if (!metadata.width || !metadata.height)
     throw new AppError("Image exceeds pixel limit", 413);
   return mime;

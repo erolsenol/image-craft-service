@@ -4,34 +4,52 @@ All configuration is read from environment variables and validated with Zod
 before the server starts. Invalid values stop startup. See
 [`.env.example`](../.env.example) for a complete sample.
 
+The PDF endpoint is disabled unless `PDF_ENABLED=true`. In Docker Compose start it
+with `docker compose --profile pdf up`; `PDF_RASTERIZER_URL` selects the internal
+worker address. The API and worker must use matching PDF resource-limit values.
+PDF inputs and rendered PNG outputs are bounded by `MAX_UPLOAD_BYTES`.
+
 ## Runtime and limits
 
-| Variable                       |            Default | Description                                    |
-| ------------------------------ | -----------------: | ---------------------------------------------- |
-| `NODE_ENV`                     |       `production` | `development`, `test`, or `production`         |
-| `HOST` / `PORT`                | `0.0.0.0` / `3000` | Listen address and port                        |
-| `MAX_UPLOAD_BYTES`             |             20 MiB | Multipart upload limit                         |
-| `MAX_INPUT_PIXELS`             |         40,000,000 | Pixel limit used to reject decompression bombs |
-| `MAX_OUTPUT_DIMENSION`         |               4096 | Maximum output width or height                 |
-| `REQUEST_TIMEOUT_MS`           |             30,000 | Fastify request timeout                        |
-| `CONCURRENCY_LIMIT`            |                  8 | Maximum simultaneous HTTP requests             |
-| `IMAGE_PROCESSING_CONCURRENCY` |                  2 | Simultaneous service-level transform jobs      |
-| `SHARP_CONCURRENCY`            |                  2 | libvips worker threads per image               |
-| `SHARP_CACHE_MEMORY_MB`        |                 32 | libvips operation-cache memory budget          |
-| `MAX_OPS_CHAIN`                |                 20 | Maximum operations per request                 |
+| Variable                        |            Default | Description                                                                                                          |
+| ------------------------------- | -----------------: | -------------------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                      |       `production` | `development`, `test`, or `production`                                                                               |
+| `HOST` / `PORT`                 | `0.0.0.0` / `3000` | Listen address and port                                                                                              |
+| `MAX_UPLOAD_BYTES`              |             20 MiB | Multipart upload limit                                                                                               |
+| `MAX_INPUT_PIXELS`              |         40,000,000 | Pixel limit used to reject decompression bombs                                                                       |
+| `MAX_ANIMATION_FRAMES`          |                100 | Maximum decoded frames in an animation (hard maximum: 100); cumulative frame pixels must also fit `MAX_INPUT_PIXELS` |
+| `SMART_QUALITY_SSIM_THRESHOLD`  |               0.98 | SSIM target for `quality: "smart"` and `/v1/analyze` (range 0.8–0.999)                                               |
+| `MAX_OUTPUT_DIMENSION`          |               4096 | Maximum output width or height                                                                                       |
+| `REQUEST_TIMEOUT_MS`            |             30,000 | Fastify request timeout                                                                                              |
+| `CONCURRENCY_LIMIT`             |                  8 | Maximum simultaneous HTTP requests                                                                                   |
+| `IMAGE_PROCESSING_CONCURRENCY`  |                  2 | Simultaneous service-level transform jobs                                                                            |
+| `SHARP_CONCURRENCY`             |                  2 | libvips worker threads per image                                                                                     |
+| `SHARP_CACHE_MEMORY_MB`         |                 32 | libvips operation-cache memory budget                                                                                |
+| `MAX_OPS_CHAIN`                 |                 20 | Maximum operations per request                                                                                       |
+| `PDF_ENABLED`                   |            `false` | Enable `GET /v1/pdf/*src`                                                                                            |
+| `PDF_MAX_DPI` / `PDF_MAX_PAGES` |           200 / 50 | Maximum DPI and PDF pages; hard DPI cap is 300                                                                       |
+| `PDF_CPU_SECONDS`               |                  5 | CPU seconds permitted per Poppler process                                                                            |
+| `PDF_MEMORY_MB`                 |                512 | Per-process address-space limit, also bounded by the worker container                                                |
+| `PDF_MAX_PIXELS`                |         20,000,000 | Maximum rasterized pixels for one PDF page                                                                           |
+| `PDF_WORKER_TIMEOUT_MS`         |             10,000 | HTTP timeout for the PDF worker                                                                                      |
 
 ## Authentication and network policy
 
-| Variable                                | Default      | Description                                                                                     |
-| --------------------------------------- | ------------ | ----------------------------------------------------------------------------------------------- |
-| `API_KEYS`                              | empty        | Comma-separated SHA-256 API-key digests with optional scopes; empty means keys are not required |
-| `API_RATE_LIMIT` / `API_RATE_WINDOW_MS` | 120 / 60,000 | Per-key HTTP request quota and window                                                           |
-| `CORS_ORIGINS`                          | empty        | Comma-separated exact HTTP(S) origins                                                           |
-| `ALLOWED_HOSTS`                         | empty        | Optional comma-separated hostname allowlist for remote images                                   |
-| `NAMED_SOURCES`                         | `{}`         | JSON alias map with origins, host allowlists, and optional auth headers                         |
-| `SIGNING_SECRET`                        | unset        | Active HMAC secret for signed remote transform URLs                                             |
-| `SIGNING_SECRET_PREVIOUS`               | unset        | Previous HMAC secret accepted during key rotation                                               |
-| `SIGNING_REQUIRED`                      | `false`      | Reject unsigned remote transform URLs                                                           |
+Tenant request/byte counters are process-local and reset on restart. Keep one
+service instance when enforcing hard daily quotas; API and storage keys remain
+tenant-scoped regardless of the cache driver.
+
+| Variable                                | Default      | Description                                                                                  |
+| --------------------------------------- | ------------ | -------------------------------------------------------------------------------------------- |
+| `API_KEYS`                              | empty        | Semicolon-separated SHA-256 digests with scopes; add `tenant:<id>` or `admin` as needed      |
+| `TENANTS`                               | `{}`         | Tenant policy JSON: daily quotas, exact source allowlists, operation allowlists, and presets |
+| `API_RATE_LIMIT` / `API_RATE_WINDOW_MS` | 120 / 60,000 | Per-key HTTP request quota and window                                                        |
+| `CORS_ORIGINS`                          | empty        | Comma-separated exact HTTP(S) origins                                                        |
+| `ALLOWED_HOSTS`                         | empty        | Optional comma-separated hostname allowlist for remote images                                |
+| `NAMED_SOURCES`                         | `{}`         | JSON alias map with origins, host allowlists, and optional auth headers                      |
+| `SIGNING_SECRET`                        | unset        | Active HMAC secret for signed remote transform URLs                                          |
+| `SIGNING_SECRET_PREVIOUS`               | unset        | Previous HMAC secret accepted during key rotation                                            |
+| `SIGNING_REQUIRED`                      | `false`      | Reject unsigned remote transform URLs                                                        |
 
 ## Cache and object storage
 

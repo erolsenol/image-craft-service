@@ -3,6 +3,125 @@ import { describe, expect, it } from "vitest";
 import { negotiateFormat, transformImage } from "../../src/core/engine.js";
 
 describe("transformImage", () => {
+  async function animatedFixture(format: "gif" | "webp"): Promise<Buffer> {
+    const width = 8;
+    const pageHeight = 6;
+    const pages = 3;
+    const pixels = Buffer.alloc(width * pageHeight * pages * 4);
+    const colors = [
+      [255, 0, 0],
+      [0, 255, 0],
+      [0, 0, 255],
+    ];
+    for (let page = 0; page < pages; page += 1) {
+      const color = colors[page]!;
+      for (
+        let offset = page * width * pageHeight * 4;
+        offset < (page + 1) * width * pageHeight * 4;
+        offset += 4
+      ) {
+        pixels[offset] = color[0]!;
+        pixels[offset + 1] = color[1]!;
+        pixels[offset + 2] = color[2]!;
+        pixels[offset + 3] = 255;
+      }
+    }
+    return sharp(pixels, {
+      raw: { width, height: pageHeight * pages, channels: 4, pageHeight },
+    })
+      .toFormat(format, { loop: 0, delay: [100, 100, 100] })
+      .toBuffer();
+  }
+
+  it.each(["gif", "webp"] as const)(
+    "resizes animated %s while preserving all frames",
+    async (format) => {
+      const input = await animatedFixture(format);
+      const result = await transformImage(
+        input,
+        [{ op: "resize", width: 4 }],
+        10_000,
+        100,
+      );
+      const metadata = await sharp(result.buffer, {
+        animated: true,
+      }).metadata();
+      expect(metadata.format).toBe(format);
+      expect(metadata.pages).toBe(3);
+      expect(metadata.width).toBe(4);
+      expect(metadata.pageHeight).toBe(3);
+      expect(metadata.delay).toEqual([100, 100, 100]);
+    },
+  );
+
+  it("converts animated GIF to animated WebP", async () => {
+    const result = await transformImage(
+      await animatedFixture("gif"),
+      [{ op: "format", format: "webp" }],
+      10_000,
+      100,
+    );
+    const metadata = await sharp(result.buffer, { animated: true }).metadata();
+    expect(result.contentType).toBe("image/webp");
+    expect(metadata.format).toBe("webp");
+    expect(metadata.pages).toBe(3);
+  });
+
+  it("extracts the requested frame as a still image", async () => {
+    const result = await transformImage(
+      await animatedFixture("gif"),
+      [],
+      10_000,
+      100,
+      undefined,
+      undefined,
+      { frame: 1, maxFrames: 3 },
+    );
+    const metadata = await sharp(result.buffer).metadata();
+    const { data } = await sharp(result.buffer)
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    expect(metadata.pages ?? 1).toBe(1);
+    expect(data[1]).toBeGreaterThan(data[0]!);
+  });
+
+  it("enforces frame and total-pixel budgets", async () => {
+    const input = await animatedFixture("gif");
+    await expect(
+      transformImage(input, [], 10_000, 100, undefined, undefined, {
+        maxFrames: 2,
+      }),
+    ).rejects.toThrow("animation frame limit");
+    await expect(transformImage(input, [], 100, 100)).rejects.toThrow(
+      "pixel limit",
+    );
+  });
+
+  it("rejects frame indices outside the animation", async () => {
+    await expect(
+      transformImage(
+        await animatedFixture("gif"),
+        [],
+        10_000,
+        100,
+        undefined,
+        undefined,
+        { frame: 3 },
+      ),
+    ).rejects.toThrow("frame does not exist");
+  });
+
+  it("rejects animated AVIF output while allowing still extraction", async () => {
+    await expect(
+      transformImage(
+        await animatedFixture("gif"),
+        [{ op: "format", format: "avif" }],
+        10_000,
+        100,
+      ),
+    ).rejects.toThrow("Animated AVIF output is not supported");
+  });
+
   it("resizes, converts and strips metadata by default", async () => {
     const input = await sharp({
       create: { width: 12, height: 8, channels: 3, background: "#f00" },
@@ -127,5 +246,27 @@ describe("transformImage", () => {
       "image/jpeg",
     );
     expect(result.contentType).toBe("image/avif");
+  });
+
+  it("chooses a smart WebP quality with at most five encodes", async () => {
+    const source = await sharp({
+      create: { width: 96, height: 64, channels: 3, background: "#4973a9" },
+    })
+      .png()
+      .toBuffer();
+    const result = await transformImage(
+      source,
+      [{ op: "format", format: "webp", quality: "smart" }],
+      10_000,
+      256,
+      undefined,
+      undefined,
+      { smartQualityThreshold: 0.98 },
+    );
+    expect(result.contentType).toBe("image/webp");
+    expect(result.smartQuality?.quality).toBeGreaterThanOrEqual(30);
+    expect(result.smartQuality?.quality).toBeLessThanOrEqual(95);
+    expect(result.smartQuality?.ssim).toBeGreaterThanOrEqual(0.98);
+    expect(result.smartQuality?.thresholdMet).toBe(true);
   });
 });

@@ -6,6 +6,7 @@ export function createCacheKey(
   ops: readonly Operation[],
   resolvedOutputFormat: string,
   sourceScope = "",
+  frame?: number,
 ): string {
   const normalizedSource = normalizeSource(source);
   const canonicalOps = JSON.stringify(ops.map(normalizeOperation));
@@ -14,6 +15,7 @@ export function createCacheKey(
     sourceScope,
     canonicalOps,
     resolvedOutputFormat.toLowerCase(),
+    frame ?? null,
   ]);
   return createHash("sha256").update(input).digest("hex");
 }

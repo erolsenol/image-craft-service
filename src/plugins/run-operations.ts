@@ -1,7 +1,11 @@
 import sharp, { type Metadata } from "sharp";
 import type { CoreOperation, Operation } from "../api/schemas/operations.js";
 import { AppError } from "../core/errors.js";
-import { transformImage, type TransformResult } from "../core/engine.js";
+import {
+  transformImage,
+  type TransformOptions,
+  type TransformResult,
+} from "../core/engine.js";
 import { validateImage } from "../security/limits.js";
 import type { ConcurrencyLimiter } from "../security/concurrency.js";
 import type { PluginRegistry } from "./interface.js";
@@ -16,6 +20,7 @@ export async function runImageOperations(
   accept?: string,
   observeOperation?: (operation: string, durationSeconds: number) => void,
   requestId = "unknown",
+  transformOptions: TransformOptions = {},
 ): Promise<TransformResult> {
   if (limiter)
     return limiter.run(() =>
@@ -28,6 +33,7 @@ export async function runImageOperations(
         accept,
         observeOperation,
         requestId,
+        transformOptions,
       ),
     );
   return runImageOperationsUnbounded(
@@ -39,6 +45,7 @@ export async function runImageOperations(
     accept,
     observeOperation,
     requestId,
+    transformOptions,
   );
 }
 
@@ -51,9 +58,27 @@ async function runImageOperationsUnbounded(
   accept?: string,
   observeOperation?: (operation: string, durationSeconds: number) => void,
   requestId = "unknown",
+  transformOptions: TransformOptions = {},
 ): Promise<TransformResult> {
-  await validateImage(input, maxPixels);
+  await validateImage(input, maxPixels, transformOptions.maxFrames);
   let buffer = input;
+  let finalTransformOptions = transformOptions;
+  if (
+    transformOptions.frame !== undefined &&
+    operations.some((operation) => operation.op === "plugin")
+  ) {
+    const selectedFrame = await transformImage(
+      buffer,
+      [],
+      maxPixels,
+      maxDimension,
+      undefined,
+      observeOperation,
+      transformOptions,
+    );
+    buffer = selectedFrame.buffer;
+    finalTransformOptions = {};
+  }
   let pluginResult: TransformResult | undefined;
   const pluginMetadata: Record<string, string | number | boolean> = {};
   let pending: CoreOperation[] = [];
@@ -79,6 +104,7 @@ async function runImageOperationsUnbounded(
         maxDimension,
         undefined,
         observeOperation,
+        finalTransformOptions,
       );
       buffer = prepared.buffer;
       pending = [];
@@ -91,7 +117,11 @@ async function runImageOperationsUnbounded(
     let contentType: string;
     let metadata: Metadata;
     try {
-      contentType = await validateImage(buffer, maxPixels);
+      contentType = await validateImage(
+        buffer,
+        maxPixels,
+        transformOptions.maxFrames,
+      );
       metadata = await sharp(buffer, {
         limitInputPixels: maxPixels,
       }).metadata();
@@ -123,6 +153,7 @@ async function runImageOperationsUnbounded(
       maxDimension,
       accept,
       observeOperation,
+      finalTransformOptions,
     );
     if (Object.keys(pluginMetadata).length > 0)
       result.metadata = pluginMetadata;

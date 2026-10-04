@@ -22,6 +22,7 @@ export default defineConfig({
           { text: "API reference", link: "/api" },
           { text: "Configuration", link: "/configuration" },
           { text: "Deployment", link: "/deployment" },
+          { text: "Horizontal scaling", link: "/horizontal-scaling" },
           { text: "Plugins", link: "/plugins" },
           { text: "FAQ", link: "/faq" },
           { text: "Security", link: "/security" },

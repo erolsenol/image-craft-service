@@ -8,7 +8,9 @@ import sharp, {
 } from "sharp";
 import type { CoreOperation } from "../api/schemas/operations.js";
 import { assertOutputDimensions } from "../security/limits.js";
+import { assertDecodedPixelBudget } from "../security/limits.js";
 import { performance } from "node:perf_hooks";
+import { findSmartQuality, measureSsim } from "./smart-quality.js";
 
 export interface TransformResult {
   buffer: Buffer;
@@ -16,6 +18,14 @@ export interface TransformResult {
   width: number;
   height: number;
   metadata?: Record<string, string | number | boolean>;
+  smartQuality?: { quality: number; ssim: number; thresholdMet: boolean };
+}
+
+export interface TransformOptions {
+  readonly frame?: number;
+  readonly maxFrames?: number;
+  readonly smartQualityThreshold?: number;
+  readonly cachedSmartQuality?: number;
 }
 
 const contentTypes: Record<string, string> = {
@@ -35,18 +45,46 @@ export async function transformImage(
   maxDimension: number,
   accept?: string,
   observeOperation?: (operation: string, durationSeconds: number) => void,
+  options: TransformOptions = {},
 ): Promise<TransformResult> {
+  const inputImageForMetadata = sharp(input, {
+    limitInputPixels: maxPixels,
+    failOn: "error",
+    animated: true,
+  });
+  const metadata = await inputImageForMetadata.metadata();
+  const pages = metadata.pages ?? 1;
+  const pageHeight =
+    metadata.pageHeight ??
+    (pages > 1 ? Math.floor((metadata.height ?? 0) / pages) : metadata.height);
+  if (!metadata.width || !pageHeight || (metadata.height ?? 0) < 1)
+    throw new AppError("Image exceeds pixel limit", 413);
+  if (pages > (options.maxFrames ?? 100))
+    throw new AppError("Image exceeds animation frame limit", 413);
+  assertDecodedPixelBudget(metadata.width, pageHeight, pages, maxPixels);
+  if (options.frame !== undefined && options.frame >= pages)
+    throw new AppError("Requested animation frame does not exist", 400);
+
+  const initial =
+    options.frame === undefined
+      ? metadata
+      : await sharp(input, {
+          limitInputPixels: maxPixels,
+          failOn: "error",
+          page: options.frame,
+          pages: 1,
+        }).metadata();
+  const initialHeight = initial.pageHeight ?? initial.height ?? 0;
+  const preservingAnimation = pages > 1 && options.frame === undefined;
   const inputImage = sharp(input, {
     limitInputPixels: maxPixels,
     failOn: "error",
+    ...(options.frame === undefined
+      ? preservingAnimation
+        ? { animated: true }
+        : {}
+      : { page: options.frame, pages: 1 }),
   });
-  const initial = await inputImage.metadata();
-  if (
-    !initial.width ||
-    !initial.height ||
-    initial.width * initial.height > maxPixels
-  )
-    throw new AppError("Image exceeds pixel limit", 413);
 
   for (const operation of operations) {
     if (operation.op === "resize")
@@ -73,12 +111,20 @@ export async function transformImage(
       ? "avif"
       : (initial.format ?? "jpeg");
   let outputFormat: string = hasAutoFormat
-    ? inputFormat in contentTypes
-      ? inputFormat
-      : "jpeg"
-    : "jpeg";
-  let outputQuality: number | undefined;
+    ? negotiateFormat(accept, inputFormat, preservingAnimation)
+    : preservingAnimation
+      ? inputFormat === "avif"
+        ? "webp"
+        : inputFormat in contentTypes
+          ? inputFormat
+          : "webp"
+      : "jpeg";
+  let outputQuality: number | "smart" | undefined;
   let roundedRadius: number | undefined;
+  let smartQualityResult: TransformResult["smartQuality"];
+  let smartEncodedBuffer: Buffer | undefined;
+  let smartReference:
+    { data: Buffer; width: number; height: number } | undefined;
   for (const operation of operations) {
     const operationStarted = performance.now();
     try {
@@ -86,7 +132,7 @@ export async function transformImage(
         case "resize": {
           if (operation.fx !== undefined && operation.fy !== undefined) {
             const targetWidth = operation.width ?? initial.width;
-            const targetHeight = operation.height ?? initial.height;
+            const targetHeight = operation.height ?? initialHeight;
             const prior = await image
               .png()
               .toBuffer({ resolveWithObject: true });
@@ -181,7 +227,7 @@ export async function transformImage(
         case "format":
           outputFormat =
             operation.format === "auto"
-              ? negotiateFormat(accept, inputFormat)
+              ? negotiateFormat(accept, inputFormat, preservingAnimation)
               : operation.format;
           outputQuality = operation.quality;
           break;
@@ -229,8 +275,76 @@ export async function transformImage(
     }
   }
 
+  if (preservingAnimation) {
+    const materializingOperation = operations.find(
+      (operation) =>
+        operation.op === "watermark" ||
+        operation.op === "roundedCorners" ||
+        operation.op === "crop" ||
+        (operation.op === "resize" && operation.fx !== undefined),
+    );
+    if (materializingOperation)
+      throw new AppError(
+        `Operation ${materializingOperation.op} is not supported for animated images`,
+        422,
+      );
+    if (outputFormat === "avif")
+      throw new AppError(
+        "Animated AVIF output is not supported; use WebP or select a frame",
+        422,
+      );
+  }
+
   let formatted: { data: Buffer; info: OutputInfo };
-  if (roundedRadius !== undefined) {
+  if (outputQuality === "smart") {
+    if (preservingAnimation || !["jpeg", "webp", "avif"].includes(outputFormat))
+      throw new AppError(
+        "Smart quality requires a still JPEG, WebP, or AVIF output",
+        400,
+      );
+    const referencePixels = await image
+      .clone()
+      .resize(128, 128, { fit: "inside", withoutEnlargement: true })
+      .removeAlpha()
+      .greyscale()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    smartReference = {
+      data: referencePixels.data,
+      width: referencePixels.info.width,
+      height: referencePixels.info.height,
+    };
+    if (options.cachedSmartQuality !== undefined) {
+      outputQuality = options.cachedSmartQuality;
+      smartQualityResult = {
+        quality: options.cachedSmartQuality,
+        ssim: 0,
+        thresholdMet: false,
+      };
+    } else {
+      const selection = await findSmartQuality(
+        smartReference,
+        async (quality) =>
+          image
+            .clone()
+            .toFormat(outputFormat as keyof FormatEnum, { quality })
+            .toBuffer(),
+        options.smartQualityThreshold ?? 0.98,
+      );
+      outputQuality = selection.quality;
+      smartQualityResult = {
+        quality: selection.quality,
+        ssim: selection.ssim,
+        thresholdMet: selection.thresholdMet,
+      };
+      smartEncodedBuffer = selection.buffer;
+    }
+  }
+  if (smartEncodedBuffer) {
+    formatted = await sharp(smartEncodedBuffer, {
+      limitInputPixels: maxPixels,
+    }).toBuffer({ resolveWithObject: true });
+  } else if (roundedRadius !== undefined) {
     let { data, info } = await image
       .png()
       .toBuffer({ resolveWithObject: true });
@@ -253,11 +367,30 @@ export async function transformImage(
       })
       .toBuffer({ resolveWithObject: true });
   }
-  if (
-    formatted.info.width > maxDimension ||
-    formatted.info.height > maxDimension
-  )
+  const outputPages = formatted.info.pages ?? 1;
+  const outputPageHeight =
+    formatted.info.pageHeight ??
+    (outputPages > 1
+      ? Math.floor(formatted.info.height / outputPages)
+      : formatted.info.height);
+  if (formatted.info.width > maxDimension || outputPageHeight > maxDimension)
     throw new AppError("Output dimensions exceed limit", 413);
+  if (outputPages > (options.maxFrames ?? 100))
+    throw new AppError("Output exceeds animation frame limit", 413);
+  assertDecodedPixelBudget(
+    formatted.info.width,
+    outputPageHeight,
+    outputPages,
+    maxPixels,
+  );
+  if (smartQualityResult && smartReference && !smartEncodedBuffer) {
+    const ssim = await measureSsim(smartReference, formatted.data);
+    smartQualityResult = {
+      ...smartQualityResult,
+      ssim,
+      thresholdMet: ssim >= (options.smartQualityThreshold ?? 0.98),
+    };
+  }
   const actualFormat = formatted.info.format;
   const contentType = contentTypes[outputFormat] ?? contentTypes[actualFormat];
   if (!contentType) throw new AppError("Unsupported output format", 400);
@@ -265,13 +398,15 @@ export async function transformImage(
     buffer: formatted.data,
     contentType,
     width: formatted.info.width,
-    height: formatted.info.height,
+    height: outputPageHeight,
+    ...(smartQualityResult ? { smartQuality: smartQualityResult } : {}),
   };
 }
 
 export function negotiateFormat(
   accept: string | undefined,
   original: string,
+  animated = false,
 ): string {
   const accepted = new Map<string, number>();
   for (const item of (accept ?? "").split(",")) {
@@ -284,9 +419,10 @@ export function negotiateFormat(
     if (Number.isFinite(value) && value > 0) accepted.set(mediaType, value);
   }
   const wildcardQuality = accepted.get("image/*") ?? accepted.get("*/*") ?? 0;
-  if ((accepted.get("image/avif") ?? wildcardQuality) > 0) return "avif";
+  if ((accepted.get("image/avif") ?? wildcardQuality) > 0)
+    return animated ? "webp" : "avif";
   if ((accepted.get("image/webp") ?? wildcardQuality) > 0) return "webp";
-  return original;
+  return animated && original === "avif" ? "webp" : original;
 }
 
 async function imageWatermark(

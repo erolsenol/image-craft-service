@@ -44,6 +44,44 @@ describe("security-related configuration bounds", () => {
     expect(envSchema.safeParse({ MAX_OPS_CHAIN: 32 }).success).toBe(true);
   });
 
+  it("caps animation frame count at 100", () => {
+    expect(envSchema.parse({}).MAX_ANIMATION_FRAMES).toBe(100);
+    expect(envSchema.safeParse({ MAX_ANIMATION_FRAMES: 100 }).success).toBe(
+      true,
+    );
+    expect(envSchema.safeParse({ MAX_ANIMATION_FRAMES: 101 }).success).toBe(
+      false,
+    );
+  });
+
+  it("validates the smart quality SSIM threshold", () => {
+    expect(envSchema.parse({}).SMART_QUALITY_SSIM_THRESHOLD).toBe(0.98);
+    expect(
+      envSchema.safeParse({ SMART_QUALITY_SSIM_THRESHOLD: 0.9 }).success,
+    ).toBe(true);
+    expect(
+      envSchema.safeParse({ SMART_QUALITY_SSIM_THRESHOLD: 1 }).success,
+    ).toBe(false);
+  });
+
+  it("validates PDF worker resource limits", () => {
+    expect(envSchema.parse({}).PDF_ENABLED).toBe(false);
+    expect(envSchema.parse({}).PDF_MAX_DPI).toBe(200);
+    expect(envSchema.safeParse({ PDF_MAX_DPI: 301 }).success).toBe(false);
+    expect(envSchema.safeParse({ PDF_MAX_PAGES: 101 }).success).toBe(false);
+    expect(envSchema.safeParse({ PDF_MEMORY_MB: 64 }).success).toBe(false);
+    expect(
+      envSchema.safeParse({ PDF_RASTERIZER_URL: "ftp://worker.internal" })
+        .success,
+    ).toBe(false);
+    expect(
+      envSchema.safeParse({
+        REQUEST_TIMEOUT_MS: 1000,
+        PDF_WORKER_TIMEOUT_MS: 1500,
+      }).success,
+    ).toBe(false);
+  });
+
   it("bounds sharp threads and libvips cache memory", () => {
     expect(envSchema.parse({}).SHARP_CONCURRENCY).toBe(2);
     expect(envSchema.parse({}).SHARP_CACHE_MEMORY_MB).toBe(32);
@@ -65,6 +103,44 @@ describe("security-related configuration bounds", () => {
     );
   });
 
+  it("bounds distributed cache lock wait by request timeout", () => {
+    expect(envSchema.parse({}).CACHE_DISTRIBUTED_LOCK_ENABLED).toBe(false);
+    expect(
+      envSchema.safeParse({
+        REQUEST_TIMEOUT_MS: 1000,
+        CACHE_DISTRIBUTED_LOCK_WAIT_MS: 1500,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("validates tenant configuration and named preset operations", () => {
+    expect(envSchema.parse({}).TENANTS).toEqual({});
+    expect(
+      envSchema.safeParse({
+        TENANTS: JSON.stringify({
+          acme: {
+            requestsPerDay: 100,
+            bytesPerDay: 5000,
+            allowedSources: ["cdn"],
+            allowedOps: ["resize", "format"],
+            presets: {
+              thumb: [
+                { op: "resize", width: 160 },
+                { op: "format", format: "webp" },
+              ],
+            },
+          },
+        }),
+      }).success,
+    ).toBe(true);
+    expect(envSchema.safeParse({ TENANTS: "{" }).success).toBe(false);
+    expect(
+      envSchema.safeParse({
+        API_KEYS: `${hashApiKey("tenant-key")} =tenant:missing`,
+      }).success,
+    ).toBe(false);
+  });
+
   it("accepts hashed API keys with optional known scopes", () => {
     expect(
       envSchema.safeParse({
@@ -77,7 +153,7 @@ describe("security-related configuration bounds", () => {
     expect(
       envSchema.safeParse({ API_KEYS: `${hashApiKey("test-key")}=admin` })
         .success,
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("accepts exact CORS origins and rejects wildcard or path entries", () => {

@@ -5,6 +5,7 @@ export interface BatchRequest {
   sources: string[];
   ops: Operation[];
   apiKeyId: string;
+  tenantId?: string;
   webhookUrl?: string;
 }
 

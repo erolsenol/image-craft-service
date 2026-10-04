@@ -22,7 +22,7 @@ describe("OpenAPI SDK contract", () => {
       await readFile(resolve("openapi/openapi.json"), "utf8"),
     ) as unknown;
     const live = app.swagger();
-    expect(live.info.version).toBe("1.1.0");
+    expect(live.info.version).toBe("1.2.0");
     expect(live.paths).toHaveProperty("/v1/img/{ops}/{*}");
     expect(live.paths).toHaveProperty("/v1/transform");
     expect(checkedIn).toEqual(live);
@@ -38,7 +38,7 @@ describe("OpenAPI SDK contract", () => {
       resolve("packages/python/image_craft_client/_openapi.py"),
       "utf8",
     );
-    expect(pythonContract).toContain("OPENAPI_VERSION = '1.1.0'");
+    expect(pythonContract).toContain("OPENAPI_VERSION = '1.2.0'");
     expect(pythonContract).toContain(
       "REMOTE_IMAGE_ROUTE = '/v1/img/{ops}/{*}'",
     );

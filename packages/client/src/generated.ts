@@ -40,6 +40,199 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/v1/admin/dashboard/data": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read dashboard cache, request, queue, and tenant stats */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path?: never;
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Default Response */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": {
+              cache: {
+                [key: string]: unknown;
+              };
+              requests: {
+                [key: string]: unknown;
+              };
+              topImages: Record<string, never>[];
+              queue: {
+                [key: string]: unknown;
+              };
+              tenants: Record<string, never>[];
+            };
+          };
+        };
+        /** @description Default Response */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": {
+              error: string;
+            };
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/admin/tenants": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List tenant policies and daily usage */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path?: never;
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Default Response */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": {
+              id: string;
+              requestsPerDay: number;
+              bytesPerDay: number;
+              allowedSources?: string[];
+              allowedOps?: string[];
+              presets?: string[];
+              usage: {
+                day?: string;
+                requests?: number;
+                bytes?: number;
+              };
+            }[];
+          };
+        };
+        /** @description Default Response */
+        403: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": {
+              error?: string;
+            };
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/admin/tenants/{tenantId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get tenant policy and daily usage */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          tenantId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Default Response */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": {
+              id: string;
+              requestsPerDay: number;
+              bytesPerDay: number;
+              allowedSources?: string[];
+              allowedOps?: string[];
+              presets?: {
+                [key: string]: unknown;
+              };
+              usage: {
+                day?: string;
+                requests?: number;
+                bytes?: number;
+              };
+            };
+          };
+        };
+        /** @description Default Response */
+        403: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": {
+              error?: string;
+            };
+          };
+        };
+        /** @description Default Response */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": {
+              error?: string;
+              code?: string;
+            };
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/v1/{*}": {
     parameters: {
       query?: never;
@@ -160,6 +353,111 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/v1/analyze": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path?: never;
+        cookie?: never;
+      };
+      requestBody: {
+        content: {
+          "application/json": {
+            source: string;
+          };
+        };
+      };
+      responses: {
+        /** @description Default Response */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": {
+              /** @enum {string} */
+              format: "webp" | "avif";
+              quality: number;
+              ssim: number;
+              thresholdMet: boolean;
+              sourceBytes: number;
+              expectedBytes: number;
+              expectedSavingsBytes: number;
+              expectedSavingsPercent: number;
+            };
+          };
+        };
+        /** @description Default Response */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["def-0"];
+          };
+        };
+        /** @description Default Response */
+        403: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["def-0"];
+          };
+        };
+        /** @description Default Response */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["def-0"];
+          };
+        };
+        /** @description Default Response */
+        429: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["def-0"];
+          };
+        };
+        /** @description Default Response */
+        502: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["def-0"];
+          };
+        };
+        /** @description Default Response */
+        503: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["def-0"];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/v1/transform": {
     parameters: {
       query?: never;
@@ -188,7 +486,7 @@ export interface paths {
              * @description Image upload
              */
             file: string;
-            /** @description JSON operation array. Optional plugins: remove-background, upscale, auto-alt-text, nsfw-check. */
+            /** @description JSON operation array. Set format.quality to "smart" for SSIM-targeted JPEG/WebP/AVIF quality. Optional plugins: remove-background, upscale, auto-alt-text, nsfw-check. */
             ops?: string;
           };
         };
@@ -242,6 +540,15 @@ export interface paths {
           };
         };
         /** @description Default Response */
+        429: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["def-0"];
+          };
+        };
+        /** @description Default Response */
         503: {
           headers: {
             [name: string]: unknown;
@@ -252,6 +559,102 @@ export interface paths {
         };
       };
     };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/pdf/{*}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: {
+      parameters: {
+        query?: {
+          /** @description One-based page number; defaults to the first page */
+          page?: number;
+          dpi?: number;
+        };
+        header?: never;
+        path: {
+          /** @description Remote PDF URL */
+          "*": string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Rasterized PDF page as PNG */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": string;
+          };
+        };
+        /** @description Default Response */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["def-0"];
+          };
+        };
+        /** @description Default Response */
+        403: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["def-0"];
+          };
+        };
+        /** @description Default Response */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["def-0"];
+          };
+        };
+        /** @description Default Response */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["def-0"];
+          };
+        };
+        /** @description Default Response */
+        429: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["def-0"];
+          };
+        };
+        /** @description Default Response */
+        503: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["def-0"];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -306,6 +709,15 @@ export interface paths {
             "application/json": components["schemas"]["def-0"];
           };
         };
+        /** @description Default Response */
+        429: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["def-0"];
+          };
+        };
       };
     };
     delete?: never;
@@ -326,13 +738,15 @@ export interface paths {
         query?: {
           /** @description Optional Unix expiry time in seconds */
           expires?: string;
+          /** @description Optional zero-based animation frame index; returns a still image */
+          frame?: number;
         };
         header?: {
           /** @description Return 304 when the cached image matches this ETag */
           "if-none-match"?: string;
         };
         path: {
-          /** @description Unsigned URLs use comma-separated operations here. Signed URLs use /v1/img/<signature>/<ops>/<source>; operation parameters are canonicalized before signing. */
+          /** @description Unsigned URLs use comma-separated operations here; use q_smart for SSIM-targeted quality. Signed URLs use /v1/img/<signature>/<ops>/<source>; operation parameters are canonicalized before signing. */
           ops: string;
           /** @description Remote HTTP(S) image URL or configured source alias path such as cdn:products/photo.jpg */
           "*": string;
@@ -369,8 +783,35 @@ export interface paths {
           };
           content?: never;
         };
+        /** @description Invalid transform parameters or frame index */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["def-0"];
+          };
+        };
         /** @description Invalid, missing, tampered, or expired signature */
         403: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["def-0"];
+          };
+        };
+        /** @description Default Response */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["def-0"];
+          };
+        };
+        /** @description Input exceeds frame or cumulative pixel limits */
+        413: {
           headers: {
             [name: string]: unknown;
           };
@@ -461,6 +902,15 @@ export interface paths {
         };
         /** @description Default Response */
         403: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["def-0"];
+          };
+        };
+        /** @description Default Response */
+        404: {
           headers: {
             [name: string]: unknown;
           };
@@ -565,6 +1015,18 @@ export interface paths {
           };
         };
         /** @description Default Response */
+        429: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": {
+              error?: string;
+              code?: string;
+            };
+          };
+        };
+        /** @description Default Response */
         503: {
           headers: {
             [name: string]: unknown;
@@ -641,6 +1103,18 @@ export interface paths {
           content: {
             "application/json": {
               error?: string;
+            };
+          };
+        };
+        /** @description Default Response */
+        403: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": {
+              error?: string;
+              code?: string;
             };
           };
         };

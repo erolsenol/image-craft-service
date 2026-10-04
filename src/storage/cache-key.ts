@@ -6,6 +6,7 @@ export function createCacheKey(
   ops: readonly Operation[],
   outputFormat = getOutputFormat(ops),
   sourceScope = "",
+  frame?: number,
 ): string {
   const sourceUrl = new URL(source);
   sourceUrl.hash = "";
@@ -32,6 +33,7 @@ export function createCacheKey(
     sourceScope,
     ops: canonicalOps,
     outputFormat,
+    ...(frame === undefined ? {} : { frame }),
   });
   return createHash("sha256").update(input).digest("hex");
 }
@@ -39,7 +41,7 @@ export function createCacheKey(
 export function getOutputFormat(ops: readonly Operation[]): string {
   return (
     [...ops].reverse().find((operation) => operation.op === "format")?.format ??
-    "jpeg"
+    "preserve"
   );
 }
 

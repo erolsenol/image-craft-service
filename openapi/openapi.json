@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Image Craft Service",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "description": "Self-hosted image processing HTTP API"
   },
   "components": {
@@ -31,6 +31,197 @@
             "content": {
               "text/plain; version=0.0.4; charset=utf-8": {
                 "schema": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/dashboard/data": {
+      "get": {
+        "summary": "Read dashboard cache, request, queue, and tenant stats",
+        "tags": ["Admin"],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "cache",
+                    "requests",
+                    "topImages",
+                    "queue",
+                    "tenants"
+                  ],
+                  "properties": {
+                    "cache": { "type": "object", "additionalProperties": true },
+                    "requests": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "topImages": {
+                      "type": "array",
+                      "items": { "type": "object" }
+                    },
+                    "queue": { "type": "object", "additionalProperties": true },
+                    "tenants": {
+                      "type": "array",
+                      "items": { "type": "object" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["error"],
+                  "properties": { "error": { "type": "string" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/tenants": {
+      "get": {
+        "summary": "List tenant policies and daily usage",
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "id",
+                      "requestsPerDay",
+                      "bytesPerDay",
+                      "usage"
+                    ],
+                    "properties": {
+                      "id": { "type": "string" },
+                      "requestsPerDay": { "type": "integer" },
+                      "bytesPerDay": { "type": "integer" },
+                      "allowedSources": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                      },
+                      "allowedOps": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                      },
+                      "presets": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                      },
+                      "usage": {
+                        "type": "object",
+                        "properties": {
+                          "day": { "type": "string" },
+                          "requests": { "type": "integer" },
+                          "bytes": { "type": "integer" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "error": { "type": "string" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/tenants/{tenantId}": {
+      "get": {
+        "summary": "Get tenant policy and daily usage",
+        "parameters": [
+          {
+            "schema": { "type": "string" },
+            "in": "path",
+            "name": "tenantId",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["id", "requestsPerDay", "bytesPerDay", "usage"],
+                  "properties": {
+                    "id": { "type": "string" },
+                    "requestsPerDay": { "type": "integer" },
+                    "bytesPerDay": { "type": "integer" },
+                    "allowedSources": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    },
+                    "allowedOps": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    },
+                    "presets": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "day": { "type": "string" },
+                        "requests": { "type": "integer" },
+                        "bytes": { "type": "integer" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "error": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": { "type": "string" },
+                    "code": { "type": "string" }
+                  }
+                }
               }
             }
           }
@@ -95,6 +286,105 @@
         }
       }
     },
+    "/v1/analyze": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["source"],
+                "properties": {
+                  "source": { "type": "string", "maxLength": 2048 }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "format",
+                    "quality",
+                    "ssim",
+                    "thresholdMet",
+                    "sourceBytes",
+                    "expectedBytes",
+                    "expectedSavingsBytes",
+                    "expectedSavingsPercent"
+                  ],
+                  "properties": {
+                    "format": { "type": "string", "enum": ["webp", "avif"] },
+                    "quality": { "type": "integer" },
+                    "ssim": { "type": "number" },
+                    "thresholdMet": { "type": "boolean" },
+                    "sourceBytes": { "type": "integer" },
+                    "expectedBytes": { "type": "integer" },
+                    "expectedSavingsBytes": { "type": "integer" },
+                    "expectedSavingsPercent": { "type": "number" }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          },
+          "403": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          },
+          "413": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          },
+          "429": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          },
+          "502": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          },
+          "503": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/transform": {
       "post": {
         "requestBody": {
@@ -112,7 +402,7 @@
                   },
                   "ops": {
                     "type": "string",
-                    "description": "JSON operation array. Optional plugins: remove-background, upscale, auto-alt-text, nsfw-check."
+                    "description": "JSON operation array. Set format.quality to \"smart\" for SSIM-targeted JPEG/WebP/AVIF quality. Optional plugins: remove-background, upscale, auto-alt-text, nsfw-check."
                   }
                 }
               }
@@ -201,6 +491,112 @@
               }
             }
           },
+          "429": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          },
+          "503": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/pdf/{*}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 1
+            },
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "description": "One-based page number; defaults to the first page"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 36,
+              "maximum": 200,
+              "default": 150
+            },
+            "in": "query",
+            "name": "dpi",
+            "required": false
+          },
+          {
+            "schema": { "type": "string" },
+            "in": "path",
+            "name": "*",
+            "required": true,
+            "description": "Remote PDF URL"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rasterized PDF page as PNG",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary",
+                  "description": "Rasterized PDF page as PNG"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          },
+          "403": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          },
+          "413": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          },
+          "415": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          },
+          "429": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          },
           "503": {
             "description": "Default Response",
             "content": {
@@ -252,6 +648,14 @@
                 "schema": { "$ref": "#/components/schemas/def-0" }
               }
             }
+          },
+          "429": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
           }
         }
       }
@@ -267,11 +671,18 @@
             "description": "Optional Unix expiry time in seconds"
           },
           {
+            "schema": { "type": "integer", "minimum": 0, "maximum": 99 },
+            "in": "query",
+            "name": "frame",
+            "required": false,
+            "description": "Optional zero-based animation frame index; returns a still image"
+          },
+          {
             "schema": { "type": "string" },
             "in": "path",
             "name": "ops",
             "required": true,
-            "description": "Unsigned URLs use comma-separated operations here. Signed URLs use /v1/img/<signature>/<ops>/<source>; operation parameters are canonicalized before signing."
+            "description": "Unsigned URLs use comma-separated operations here; use q_smart for SSIM-targeted quality. Signed URLs use /v1/img/<signature>/<ops>/<source>; operation parameters are canonicalized before signing."
           },
           {
             "schema": { "type": "string" },
@@ -340,8 +751,32 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid transform parameters or frame index",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          },
           "403": {
             "description": "Invalid, missing, tampered, or expired signature",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          },
+          "413": {
+            "description": "Input exceeds frame or cumulative pixel limits",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/def-0" }
@@ -426,6 +861,14 @@
               }
             }
           },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/def-0" }
+              }
+            }
+          },
           "429": {
             "description": "Default Response",
             "content": {
@@ -490,6 +933,20 @@
                 "schema": {
                   "type": "object",
                   "properties": { "error": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": { "type": "string" },
+                    "code": { "type": "string" }
+                  }
                 }
               }
             }
@@ -578,6 +1035,20 @@
                 "schema": {
                   "type": "object",
                   "properties": { "error": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": { "type": "string" },
+                    "code": { "type": "string" }
+                  }
                 }
               }
             }

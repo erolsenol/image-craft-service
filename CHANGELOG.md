@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-04
+
+### Added
+
+- Added optional Redis-backed cross-node cache-miss locks with short renewable leases, cache rechecks, bounded wait, and fail-open behavior; added Helm HPA examples, scaling architecture guidance, and a reproducible load generator/report template for 1k/5k/10k RPS.
+- Added an optional, read-only `/admin` dashboard with live cache, image request, error, queue, and tenant usage summaries. The dashboard is disabled by default and its data endpoint requires an API key with the `admin` scope.
+- Added tenant-associated hashed API keys, daily request/byte quotas, source and operation allowlists, named URL presets, tenant-namespaced cache and batch storage, admin usage endpoints, and tenant-labeled Prometheus counters.
+- Added smart lossy quality selection (`quality: "smart"`) with a configurable SSIM threshold, a five-encode maximum, per-source quality caching, and `POST /v1/analyze` format/size estimates.
+- Added a reproducible `npm run benchmark:smart-quality` script and documented its CPU/latency trade-off.
+- Add opt-in `GET /v1/pdf/*src` PDF-page rasterization through an isolated Poppler worker, with page selection, DPI/page/pixel/byte caps, CPU and memory limits, and bounded worker health checks.
+
+- Preserve animated GIF and WebP frames through resize, convert animations to WebP, and support zero-based `?frame=n` extraction. AVIF sequences are decoded to WebP because animated AVIF encoding is unavailable in Sharp/libvips.
+- Bound animation decoding with a 100-frame hard cap and the cumulative `MAX_INPUT_PIXELS` budget.
+
 ## [1.1.0] - 2026-10-03
 
 ### Added

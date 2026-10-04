@@ -1,6 +1,6 @@
 import sharp from "sharp";
 import { Readable } from "node:stream";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/api/app.js";
 import type { AppConfig } from "../../src/config/index.js";
 import { createCacheKey } from "../../src/core/cache-key.js";
@@ -21,6 +21,16 @@ const testConfig: AppConfig = {
   PORT: 3000,
   MAX_UPLOAD_BYTES: 1024 * 1024,
   MAX_INPUT_PIXELS: 100_000,
+  MAX_ANIMATION_FRAMES: 10,
+  SMART_QUALITY_SSIM_THRESHOLD: 0.98,
+  PDF_ENABLED: false,
+  PDF_RASTERIZER_URL: "http://pdf-worker:8000",
+  PDF_MAX_DPI: 200,
+  PDF_MAX_PAGES: 50,
+  PDF_CPU_SECONDS: 5,
+  PDF_MEMORY_MB: 512,
+  PDF_WORKER_TIMEOUT_MS: 10_000,
+  PDF_MAX_PIXELS: 20_000_000,
   MAX_OUTPUT_DIMENSION: 1000,
   REQUEST_TIMEOUT_MS: 2000,
   CONCURRENCY_LIMIT: 10,
@@ -36,6 +46,8 @@ const testConfig: AppConfig = {
   SHARP_CACHE_MEMORY_MB: 32,
   MAX_OPS_CHAIN: 20,
   API_KEYS: "",
+  ADMIN_DASHBOARD_ENABLED: false,
+  TENANTS: {},
   ALLOWED_HOSTS: "",
   NAMED_SOURCES: {},
   SIGNING_SECRET: undefined,
@@ -44,6 +56,9 @@ const testConfig: AppConfig = {
   STORAGE_DRIVER: "disk",
   CACHE_DIR: "/tmp/image-craft-test-cache",
   CACHE_ENABLED: true,
+  CACHE_DISTRIBUTED_LOCK_ENABLED: false,
+  CACHE_DISTRIBUTED_LOCK_TTL_MS: 10_000,
+  CACHE_DISTRIBUTED_LOCK_WAIT_MS: 15_000,
   CACHE_MAX_AGE_SECONDS: 60,
   CACHE_MAX_SIZE_BYTES: 1024 * 1024,
   S3_ENDPOINT: undefined,
@@ -268,8 +283,9 @@ describe("HTTP API", () => {
       ].schema.properties.file.format,
     ).toBe("binary");
     expect(docs.json().paths).toHaveProperty("/v1/hash/{*}");
+    expect(docs.json().paths).toHaveProperty("/v1/pdf/{*}");
     expect(docs.json().paths).toHaveProperty("/metrics");
-    expect(docs.json().info.version).toBe("1.1.0");
+    expect(docs.json().info.version).toBe("1.2.0");
     expect(docs.json().paths["/v1/img/{ops}/{*}"]?.get?.parameters).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "expires", in: "query" }),
@@ -328,6 +344,44 @@ describe("HTTP API", () => {
     await metricsApp.close();
   });
 
+  it("analyzes a remote source and reports the best supported format and savings", async () => {
+    const analyzeApp = await createApp(
+      testConfig,
+      new MemoryStorage(),
+      undefined,
+      undefined,
+      {
+        remoteImageFetcher: async () => ({
+          body: image,
+          contentType: "image/jpeg",
+        }),
+      },
+    );
+    await analyzeApp.ready();
+    const response = await analyzeApp.inject({
+      method: "POST",
+      url: "/v1/analyze",
+      payload: { source: "https://example.com/analyze.jpg" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      format: expect.stringMatching(/^(webp|avif)$/),
+      quality: expect.any(Number),
+      ssim: expect.any(Number),
+      thresholdMet: expect.any(Boolean),
+      sourceBytes: image.length,
+      expectedBytes: expect.any(Number),
+      expectedSavingsBytes: expect.any(Number),
+      expectedSavingsPercent: expect.any(Number),
+    });
+    const smartTransform = await analyzeApp.inject(
+      "/v1/img/f_webp,q_smart/https%3A%2F%2Fexample.com%2Fanalyze.jpg",
+    );
+    expect(smartTransform.statusCode).toBe(200);
+    expect(smartTransform.headers["content-type"]).toContain("image/webp");
+    await analyzeApp.close();
+  });
+
   it("negotiates f_auto from Accept and varies cache output by format", async () => {
     const autoApp = await createApp(
       { ...testConfig, CORS_ORIGINS: "https://client.example" },
@@ -382,6 +436,123 @@ describe("HTTP API", () => {
     expect(uploaded.headers["content-type"]).toContain("image/webp");
     expect(uploaded.headers.vary).toContain("Accept");
     await autoApp.close();
+  });
+
+  it("extracts an animation frame from the URL endpoint", async () => {
+    const width = 8;
+    const pageHeight = 6;
+    const pages = 3;
+    const pixels = Buffer.alloc(width * pageHeight * pages * 4);
+    for (let page = 0; page < pages; page += 1) {
+      const color = [
+        [255, 0, 0],
+        [0, 255, 0],
+        [0, 0, 255],
+      ][page]!;
+      for (
+        let offset = page * width * pageHeight * 4;
+        offset < (page + 1) * width * pageHeight * 4;
+        offset += 4
+      ) {
+        pixels[offset] = color[0]!;
+        pixels[offset + 1] = color[1]!;
+        pixels[offset + 2] = color[2]!;
+        pixels[offset + 3] = 255;
+      }
+    }
+    const animation = await sharp(pixels, {
+      raw: { width, height: pageHeight * pages, channels: 4, pageHeight },
+    })
+      .gif({ loop: 0, delay: [100, 100, 100] })
+      .toBuffer();
+    const frameApp = await createApp(
+      testConfig,
+      new MemoryStorage(),
+      undefined,
+      undefined,
+      {
+        remoteImageFetcher: async () => ({
+          body: animation,
+          contentType: "image/gif",
+        }),
+      },
+    );
+    await frameApp.ready();
+    const response = await frameApp.inject(
+      "/v1/img/w_4/https%3A%2F%2Fexample.com%2Fanimation.gif?frame=1",
+    );
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toContain("image/jpeg");
+    expect((await sharp(response.rawPayload).metadata()).pages ?? 1).toBe(1);
+    const missingFrame = await frameApp.inject(
+      "/v1/img/w_4/https%3A%2F%2Fexample.com%2Fanimation.gif?frame=3",
+    );
+    expect(missingFrame.statusCode).toBe(400);
+    await frameApp.close();
+
+    const limitedFrameApp = await createApp(
+      { ...testConfig, MAX_ANIMATION_FRAMES: 2 },
+      new MemoryStorage(),
+      undefined,
+      undefined,
+      {
+        remoteImageFetcher: async () => ({
+          body: animation,
+          contentType: "image/gif",
+        }),
+      },
+    );
+    await limitedFrameApp.ready();
+    const overLimit = await limitedFrameApp.inject(
+      "/v1/img/w_4/https%3A%2F%2Fexample.com%2Fanimation.gif",
+    );
+    expect(overLimit.statusCode).toBe(413);
+    await limitedFrameApp.close();
+  });
+
+  it("rasterizes remote PDF pages through the configured worker", async () => {
+    const sourcePdf = Buffer.from("%PDF-1.4\nfixture bytes");
+    const png = await sharp({
+      create: { width: 2, height: 2, channels: 3, background: "#123456" },
+    })
+      .png()
+      .toBuffer();
+    const render = vi.fn(async () => png);
+    const pdfApp = await createApp(
+      { ...testConfig, PDF_ENABLED: true },
+      new MemoryStorage(),
+      undefined,
+      undefined,
+      {
+        remoteImageFetcher: async () => ({
+          body: sourcePdf,
+          contentType: "application/pdf",
+        }),
+        pdfRasterizer: { render },
+      },
+    );
+    await pdfApp.ready();
+    const response = await pdfApp.inject(
+      "/v1/pdf/https%3A%2F%2Fexample.com%2Fdocument.pdf?page=2&dpi=180",
+    );
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toContain("image/png");
+    expect(response.rawPayload).toEqual(png);
+    expect(render).toHaveBeenCalledWith(sourcePdf, { page: 2, dpi: 180 });
+
+    const excessiveDpi = await pdfApp.inject(
+      "/v1/pdf/https%3A%2F%2Fexample.com%2Fdocument.pdf?dpi=301",
+    );
+    expect(excessiveDpi.statusCode).toBe(400);
+    await pdfApp.close();
+
+    const disabledApp = await createApp(testConfig, new MemoryStorage());
+    await disabledApp.ready();
+    const disabled = await disabledApp.inject(
+      "/v1/pdf/https%3A%2F%2Fexample.com%2Fdocument.pdf",
+    );
+    expect(disabled.statusCode).toBe(503);
+    await disabledApp.close();
   });
 
   it("generates a BlurHash for an SSRF-checked remote image", async () => {
@@ -694,6 +865,11 @@ describe("HTTP API", () => {
       payload: { sources: ["https://example.com/a.png"], ops: [] },
     });
     expect(missingScope.statusCode).toBe(403);
+    const missingAdminScope = await server.inject({
+      url: "/v1/admin/tenants",
+      headers,
+    });
+    expect(missingAdminScope.statusCode).toBe(403);
     expect(missingScope.headers["x-content-type-options"]).toBe("nosniff");
     expect(missingScope.headers["content-security-policy"]).toContain(
       "default-src 'none'",
@@ -737,6 +913,109 @@ describe("HTTP API", () => {
     expect(deniedHeader.statusCode).toBe(403);
 
     await server.close();
+  });
+
+  it("serves the optional dashboard shell and protects live data with admin scope", async () => {
+    const key = "dashboard-admin-key";
+    const server = await createApp({
+      ...testConfig,
+      ADMIN_DASHBOARD_ENABLED: true,
+      API_KEYS: `${hashApiKey(key)}=admin`,
+    });
+    await server.ready();
+    expect((await server.inject({ url: "/admin" })).statusCode).toBe(200);
+    expect(
+      (await server.inject({ url: "/v1/admin/dashboard/data" })).statusCode,
+    ).toBe(401);
+    const data = await server.inject({
+      url: "/v1/admin/dashboard/data",
+      headers: { "x-api-key": key },
+    });
+    expect(data.statusCode).toBe(200);
+    expect(data.json()).toMatchObject({
+      cache: { entries: 0, hits: 0, misses: 0 },
+      requests: { total: expect.any(Number), errorRate: expect.any(Number) },
+      topImages: [],
+      queue: { enabled: false },
+      tenants: [],
+    });
+    await server.close();
+
+    const disabled = await createApp(testConfig);
+    const response = await disabled.inject({ url: "/admin" });
+    expect(response.statusCode).toBe(404);
+    await disabled.close();
+  });
+
+  it("applies tenant quotas, source and operation allowlists, presets, admin scope, and usage metrics", async () => {
+    const secret = "acme-tenant-key";
+    const tenantApp = await createApp(
+      {
+        ...testConfig,
+        API_KEYS: `${hashApiKey(secret)}=tenant:acme+transform+admin`,
+        TENANTS: {
+          acme: {
+            requestsPerDay: 4,
+            bytesPerDay: 100_000,
+            allowedSources: ["example.com"],
+            allowedOps: ["resize", "format"],
+            presets: {
+              thumb: [
+                { op: "resize", width: 8 },
+                { op: "format", format: "webp" },
+              ],
+            },
+          },
+        },
+      },
+      new MemoryStorage(),
+      undefined,
+      undefined,
+      {
+        remoteImageFetcher: async () => ({
+          body: image,
+          contentType: "image/jpeg",
+        }),
+      },
+    );
+    await tenantApp.ready();
+    const headers = { "x-api-key": secret };
+    const preset = await tenantApp.inject({
+      url: "/v1/img/p:thumb/https%3A%2F%2Fexample.com%2Ftenant.jpg",
+      headers,
+    });
+    expect(preset.statusCode).toBe(200);
+    expect(preset.headers["content-type"]).toContain("image/webp");
+    expect(
+      (
+        await tenantApp.inject({
+          url: "/v1/img/w_8/https%3A%2F%2Fother.example%2Ftenant.jpg",
+          headers,
+        })
+      ).statusCode,
+    ).toBe(403);
+    expect(
+      (
+        await tenantApp.inject({
+          url: "/v1/img/gray_1/https%3A%2F%2Fexample.com%2Ftenant.jpg",
+          headers,
+        })
+      ).statusCode,
+    ).toBe(403);
+    const usage = await tenantApp.inject({
+      url: "/v1/admin/tenants/acme",
+      headers,
+    });
+    expect(usage.statusCode).toBe(200);
+    expect(usage.json().usage).toMatchObject({ requests: 4 });
+    expect(
+      (await tenantApp.inject({ url: "/v1/admin/tenants", headers }))
+        .statusCode,
+    ).toBe(429);
+    expect((await tenantApp.inject("/metrics")).body).toContain(
+      'image_craft_tenant_requests_total{tenant="acme"} 4',
+    );
+    await tenantApp.close();
   });
 
   it("rate limits API requests by the configured API key", async () => {

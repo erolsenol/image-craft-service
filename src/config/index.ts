@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { validateApiKeyDefinitions } from "../security/api-keys.js";
+import {
+  parseApiKeyDefinitions,
+  validateApiKeyDefinitions,
+} from "../security/api-keys.js";
+import {
+  parseTenantPolicies,
+  type TenantPolicies,
+} from "../security/tenants.js";
 
 const namedSourceSchema = z
   .object({
@@ -116,6 +123,46 @@ export const envSchema = z
       .positive()
       .max(100_000_000)
       .default(40_000_000),
+    MAX_ANIMATION_FRAMES: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(100)
+      .default(100),
+    SMART_QUALITY_SSIM_THRESHOLD: z.coerce
+      .number()
+      .min(0.8)
+      .max(0.999)
+      .default(0.98),
+    PDF_ENABLED: z.coerce.boolean().default(false),
+    PDF_RASTERIZER_URL: z
+      .string()
+      .url()
+      .refine((value) => {
+        const url = new URL(value);
+        return (
+          ["http:", "https:"].includes(url.protocol) &&
+          !url.username &&
+          !url.password
+        );
+      }, "PDF_RASTERIZER_URL must be a credential-free HTTP(S) URL")
+      .default("http://pdf-worker:8000"),
+    PDF_MAX_DPI: z.coerce.number().int().min(36).max(300).default(200),
+    PDF_MAX_PAGES: z.coerce.number().int().positive().max(100).default(50),
+    PDF_CPU_SECONDS: z.coerce.number().int().positive().max(30).default(5),
+    PDF_MEMORY_MB: z.coerce.number().int().min(128).max(1024).default(512),
+    PDF_WORKER_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .min(500)
+      .max(30_000)
+      .default(10_000),
+    PDF_MAX_PIXELS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(40_000_000)
+      .default(20_000_000),
     MAX_OUTPUT_DIMENSION: z.coerce
       .number()
       .int()
@@ -154,6 +201,24 @@ export const envSchema = z
       message:
         "API_KEYS must contain SHA-256 digests with optional allowed scopes",
     }),
+    ADMIN_DASHBOARD_ENABLED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    TENANTS: z
+      .string()
+      .default("{}")
+      .transform((value, context): TenantPolicies => {
+        try {
+          return parseTenantPolicies(value);
+        } catch {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "TENANTS must be valid JSON with valid tenant policies",
+          });
+          return {};
+        }
+      }),
     API_RATE_LIMIT: z.coerce.number().int().positive().max(10_000).default(120),
     API_RATE_WINDOW_MS: z.coerce
       .number()
@@ -234,6 +299,22 @@ export const envSchema = z
       .enum(["true", "false"])
       .default("true")
       .transform((value) => value === "true"),
+    CACHE_DISTRIBUTED_LOCK_ENABLED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    CACHE_DISTRIBUTED_LOCK_TTL_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(60_000)
+      .default(10_000),
+    CACHE_DISTRIBUTED_LOCK_WAIT_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(300_000)
+      .default(15_000),
     CACHE_DIR: z.string().default("/tmp/image-craft-cache"),
     CACHE_MAX_SIZE_BYTES: z.coerce
       .number()
@@ -359,11 +440,30 @@ export const envSchema = z
       .default(20_000),
   })
   .superRefine((settings, context) => {
+    try {
+      for (const key of parseApiKeyDefinitions(settings.API_KEYS)) {
+        if (key.tenantId && !settings.TENANTS[key.tenantId])
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["API_KEYS"],
+            message: `API_KEYS references unconfigured tenant "${key.tenantId}"`,
+          });
+      }
+    } catch {
+      // The API_KEYS field refinement reports the malformed key format.
+    }
     if (settings.AI_PLUGIN_TIMEOUT_MS > settings.REQUEST_TIMEOUT_MS)
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["AI_PLUGIN_TIMEOUT_MS"],
         message: "AI_PLUGIN_TIMEOUT_MS cannot exceed REQUEST_TIMEOUT_MS",
+      });
+    if (settings.CACHE_DISTRIBUTED_LOCK_WAIT_MS > settings.REQUEST_TIMEOUT_MS)
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["CACHE_DISTRIBUTED_LOCK_WAIT_MS"],
+        message:
+          "CACHE_DISTRIBUTED_LOCK_WAIT_MS cannot exceed REQUEST_TIMEOUT_MS",
       });
     if (settings.STORAGE_DRIVER === "s3" && !settings.S3_BUCKET)
       context.addIssue({
@@ -421,6 +521,13 @@ export const envSchema = z
         path: ["BATCH_CONCURRENCY"],
         message:
           "BATCH_MAX_RESULT_BYTES times BATCH_CONCURRENCY must not exceed 128 MiB",
+      });
+    }
+    if (settings.PDF_WORKER_TIMEOUT_MS > settings.REQUEST_TIMEOUT_MS) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["PDF_WORKER_TIMEOUT_MS"],
+        message: "PDF_WORKER_TIMEOUT_MS must not exceed REQUEST_TIMEOUT_MS",
       });
     }
   });

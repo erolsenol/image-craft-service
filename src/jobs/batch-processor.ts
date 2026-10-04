@@ -16,6 +16,12 @@ import type {
 import { ConcurrencyLimiter } from "../security/concurrency.js";
 import { validateImage } from "../security/limits.js";
 import { withSpan } from "../observability/tracing.js";
+import {
+  namespaceTenantKey,
+  tenantAllowsOperations,
+  tenantAllowsSource,
+  type TenantUsage,
+} from "../security/tenants.js";
 
 export async function processBatch(
   input: BatchRequest,
@@ -27,6 +33,7 @@ export async function processBatch(
     config.IMAGE_PROCESSING_CONCURRENCY,
   ),
   observeOperation?: (operation: string, durationSeconds: number) => void,
+  tenantUsage?: TenantUsage,
 ): Promise<BatchJobResult> {
   const files: BatchResultFile[] = [];
   const errors: BatchJobResult["errors"] = [];
@@ -39,8 +46,15 @@ export async function processBatch(
 
   for (const [index, source] of input.sources.entries()) {
     try {
+      const tenantPolicy = input.tenantId
+        ? config.TENANTS[input.tenantId]
+        : undefined;
+      if (tenantPolicy && !tenantAllowsSource(tenantPolicy, source))
+        throw new AppError("Source is not allowed for this tenant", 403);
+      if (tenantPolicy && !tenantAllowsOperations(tenantPolicy, input.ops))
+        throw new AppError("Operation is not allowed for this tenant", 403);
       const sourceBuffer = source.startsWith("file_")
-        ? await loadOwnedUpload(storage, source, input.apiKeyId)
+        ? await loadOwnedUpload(storage, source, input.apiKeyId, input.tenantId)
         : (
             await withSpan(
               "image.fetch",
@@ -54,6 +68,13 @@ export async function processBatch(
             )
           ).body;
       if (!sourceBuffer) throw new AppError("Uploaded source has expired", 404);
+      if (
+        input.tenantId &&
+        tenantUsage &&
+        !source.startsWith("file_") &&
+        !tenantUsage.recordBytes(input.tenantId, sourceBuffer.length)
+      )
+        throw new AppError("Tenant daily byte quota exceeded", 429);
       await validateImage(sourceBuffer, config.MAX_INPUT_PIXELS);
       const result = await withSpan(
         "image.transform",
@@ -77,7 +98,10 @@ export async function processBatch(
         throw new AppError("Batch output exceeds configured size limit", 413);
       totalOutputBytes += result.buffer.byteLength;
       const name = `image-${String(index + 1).padStart(3, "0")}.${extensionFor(result.contentType)}`;
-      const storageKey = `batch-result:${jobId}:${index}`;
+      const storageKey = namespaceTenantKey(
+        input.tenantId,
+        `batch-result:${jobId}:${index}`,
+      );
       await storage.set(
         storageKey,
         result.buffer,
@@ -112,10 +136,11 @@ async function loadOwnedUpload(
   storage: Storage,
   fileId: string,
   apiKeyId: string,
+  tenantId?: string,
 ): Promise<Buffer | undefined> {
   const [owner, image] = await Promise.all([
-    storage.get(`batch-upload-owner:${fileId}`),
-    storage.get(`batch-upload:${fileId}`),
+    storage.get(namespaceTenantKey(tenantId, `batch-upload-owner:${fileId}`)),
+    storage.get(namespaceTenantKey(tenantId, `batch-upload:${fileId}`)),
   ]);
   if (!owner || owner.toString("utf8") !== apiKeyId) return undefined;
   return image;

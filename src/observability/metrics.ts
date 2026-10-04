@@ -15,6 +15,8 @@ export class ServiceMetrics {
   private readonly queueAvailable: Gauge<string>;
   private readonly inFlight: Gauge<string>;
   private readonly errors: Counter<string>;
+  private readonly tenantRequests: Counter<string>;
+  private readonly tenantBytes: Counter<string>;
 
   constructor() {
     const common = { registers: [this.registry] };
@@ -66,6 +68,18 @@ export class ServiceMetrics {
       help: "Failed HTTP responses by stable error code.",
       labelNames: ["code"],
     });
+    this.tenantRequests = new Counter({
+      ...common,
+      name: "image_craft_tenant_requests_total",
+      help: "Requests counted against configured tenant daily quotas.",
+      labelNames: ["tenant"],
+    });
+    this.tenantBytes = new Counter({
+      ...common,
+      name: "image_craft_tenant_input_bytes_total",
+      help: "Input bytes counted against configured tenant daily quotas.",
+      labelNames: ["tenant"],
+    });
   }
 
   attach(app: FastifyInstance): void {
@@ -112,6 +126,14 @@ export class ServiceMetrics {
 
   recordCacheResult(result: "HIT" | "MISS"): void {
     this.cacheRequests.inc({ result: result.toLowerCase() });
+  }
+
+  recordTenantRequest(tenant: string): void {
+    this.tenantRequests.inc({ tenant });
+  }
+
+  recordTenantBytes(tenant: string, bytes: number): void {
+    this.tenantBytes.inc({ tenant }, bytes);
   }
 
   recordOperation(operation: string, durationSeconds: number): void {

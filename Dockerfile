@@ -13,6 +13,7 @@ COPY package*.json .npmrc ./
 COPY packages/client/package.json ./packages/client/package.json
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/dashboard/dist ./dashboard/dist
 RUN mkdir -p /var/cache/image-craft && chown -R node:node /app /var/cache/image-craft
 USER node
 EXPOSE 3000

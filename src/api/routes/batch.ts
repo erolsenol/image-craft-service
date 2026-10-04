@@ -10,6 +10,12 @@ import { resolveBatchClientId } from "../../security/api-keys.js";
 import { validateImage } from "../../security/limits.js";
 import { operationsSchema } from "../schemas/operations.js";
 import { supportsPresignedUploads } from "../../storage/presigned-upload-storage.js";
+import {
+  namespaceTenantKey,
+  tenantAllowsOperations,
+  tenantAllowsSource,
+  type TenantUsage,
+} from "../../security/tenants.js";
 
 const presignedUploadRequestSchema = z.object({
   contentType: z.enum(["image/jpeg", "image/png", "image/webp", "image/avif"]),
@@ -61,10 +67,11 @@ export async function batchRoutes(
     config: AppConfig;
     storage: Storage;
     queue?: BatchQueue;
+    tenantUsage?: TenantUsage;
     validateWebhook?: (url: string) => Promise<unknown>;
   },
 ): Promise<void> {
-  const { config, storage, queue } = options;
+  const { config, storage, queue, tenantUsage } = options;
   const validateWebhook = options.validateWebhook ?? assertPublicWebhookUrl;
 
   app.post(
@@ -88,6 +95,10 @@ export async function batchRoutes(
           401: { type: "object", properties: { error: { type: "string" } } },
           503: { type: "object", properties: { error: { type: "string" } } },
           415: { type: "object", properties: { error: { type: "string" } } },
+          429: {
+            type: "object",
+            properties: { error: { type: "string" }, code: { type: "string" } },
+          },
         },
       },
     },
@@ -96,11 +107,14 @@ export async function batchRoutes(
         return reply.code(503).send({ error: "Batch jobs are disabled" });
       if (!queue.isReady())
         return reply.code(503).send({ error: "Batch queue is unavailable" });
-      const clientId = resolveBatchClientId(
-        headerValue(request.headers["x-api-key"]),
-        request.ip,
-        config.API_KEYS,
-      );
+      const tenantId = request.tenantPrincipal?.tenantId;
+      const clientId =
+        tenantId ??
+        resolveBatchClientId(
+          headerValue(request.headers["x-api-key"]),
+          request.ip,
+          config.API_KEYS,
+        );
       if (!clientId) return reply.code(401).send({ error: "Invalid API key" });
       if (!request.isMultipart()) {
         if (!supportsPresignedUploads(storage))
@@ -116,9 +130,20 @@ export async function batchRoutes(
             code: "INVALID_UPLOAD_REQUEST",
           });
         const fileId = `file_${randomUUID()}`;
-        const storageKey = `batch-upload:${fileId}`;
+        if (
+          tenantId &&
+          !tenantUsage?.recordBytes(tenantId, parsed.data.sizeBytes)
+        )
+          return reply.code(429).send({
+            error: "Tenant daily byte quota exceeded",
+            code: "TENANT_BYTES_QUOTA_EXCEEDED",
+          });
+        const storageKey = namespaceTenantKey(
+          tenantId,
+          `batch-upload:${fileId}`,
+        );
         await storage.set(
-          `batch-upload-owner:${fileId}`,
+          namespaceTenantKey(tenantId, `batch-upload-owner:${fileId}`),
           Buffer.from(clientId),
           config.BATCH_RESULT_TTL_SECONDS,
         );
@@ -145,15 +170,20 @@ export async function batchRoutes(
         if (part.type === "file") image = await part.toBuffer();
       }
       if (!image) return reply.code(400).send({ error: "file is required" });
+      if (tenantId && !tenantUsage?.recordBytes(tenantId, image.length))
+        return reply.code(429).send({
+          error: "Tenant daily byte quota exceeded",
+          code: "TENANT_BYTES_QUOTA_EXCEEDED",
+        });
       await validateImage(image, config.MAX_INPUT_PIXELS);
       const fileId = `file_${randomUUID()}`;
       await storage.set(
-        `batch-upload:${fileId}`,
+        namespaceTenantKey(tenantId, `batch-upload:${fileId}`),
         image,
         config.BATCH_RESULT_TTL_SECONDS,
       );
       await storage.set(
-        `batch-upload-owner:${fileId}`,
+        namespaceTenantKey(tenantId, `batch-upload-owner:${fileId}`),
         Buffer.from(clientId),
         config.BATCH_RESULT_TTL_SECONDS,
       );
@@ -195,6 +225,10 @@ export async function batchRoutes(
             },
           },
           401: { type: "object", properties: { error: { type: "string" } } },
+          403: {
+            type: "object",
+            properties: { error: { type: "string" }, code: { type: "string" } },
+          },
           429: {
             type: "object",
             properties: {
@@ -211,11 +245,14 @@ export async function batchRoutes(
         return reply.code(503).send({ error: "Batch jobs are disabled" });
       if (!queue.isReady())
         return reply.code(503).send({ error: "Batch queue is unavailable" });
-      const clientId = resolveBatchClientId(
-        headerValue(request.headers["x-api-key"]),
-        request.ip,
-        config.API_KEYS,
-      );
+      const tenantId = request.tenantPrincipal?.tenantId;
+      const clientId =
+        tenantId ??
+        resolveBatchClientId(
+          headerValue(request.headers["x-api-key"]),
+          request.ip,
+          config.API_KEYS,
+        );
       if (!clientId) return reply.code(401).send({ error: "Invalid API key" });
       const body = request.body as { ops?: unknown };
       if (Array.isArray(body.ops) && body.ops.length > config.MAX_OPS_CHAIN)
@@ -236,6 +273,22 @@ export async function batchRoutes(
           error: `Operation chain exceeds ${config.MAX_OPS_CHAIN} operations`,
           code: "OPS_CHAIN_TOO_LONG",
         });
+      if (tenantId) {
+        const policy = config.TENANTS[tenantId];
+        if (
+          !policy ||
+          !tenantAllowsOperations(policy, parsed.data.ops) ||
+          parsed.data.sources.some(
+            (source) =>
+              !source.startsWith("file_") &&
+              !tenantAllowsSource(policy, source),
+          )
+        )
+          return reply.code(403).send({
+            error: "Batch source or operation is not allowed for this tenant",
+            code: "TENANT_POLICY_DENIED",
+          });
+      }
       if (parsed.data.webhookUrl) {
         if (!config.WEBHOOK_SIGNING_SECRET)
           return reply.code(400).send({
@@ -255,6 +308,7 @@ export async function batchRoutes(
         sources: parsed.data.sources,
         ops: parsed.data.ops,
         apiKeyId: clientId,
+        ...(tenantId ? { tenantId } : {}),
         ...(parsed.data.webhookUrl
           ? { webhookUrl: parsed.data.webhookUrl }
           : {}),
@@ -313,11 +367,13 @@ export async function batchRoutes(
         return reply.code(503).send({ error: "Batch jobs are disabled" });
       if (!queue.isReady())
         return reply.code(503).send({ error: "Batch queue is unavailable" });
-      const clientId = resolveBatchClientId(
-        headerValue(request.headers["x-api-key"]),
-        request.ip,
-        config.API_KEYS,
-      );
+      const clientId =
+        request.tenantPrincipal?.tenantId ??
+        resolveBatchClientId(
+          headerValue(request.headers["x-api-key"]),
+          request.ip,
+          config.API_KEYS,
+        );
       if (!clientId) return reply.code(401).send({ error: "Invalid API key" });
       const status = await queue.get(request.params.id, clientId);
       if (!status) return reply.code(404).send({ error: "Job not found" });
@@ -350,11 +406,13 @@ export async function batchRoutes(
         return reply.code(503).send({ error: "Batch jobs are disabled" });
       if (!queue.isReady())
         return reply.code(503).send({ error: "Batch queue is unavailable" });
-      const clientId = resolveBatchClientId(
-        headerValue(request.headers["x-api-key"]),
-        request.ip,
-        config.API_KEYS,
-      );
+      const clientId =
+        request.tenantPrincipal?.tenantId ??
+        resolveBatchClientId(
+          headerValue(request.headers["x-api-key"]),
+          request.ip,
+          config.API_KEYS,
+        );
       if (!clientId) return reply.code(401).send({ error: "Invalid API key" });
       const job = await queue.get(request.params.id, clientId);
       if (!job) return reply.code(404).send({ error: "Job not found" });

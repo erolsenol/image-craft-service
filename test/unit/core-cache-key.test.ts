@@ -46,6 +46,14 @@ describe("core cache key", () => {
     );
   });
 
+  it("keeps extracted frames separate in the cache", () => {
+    const source = "https://example.com/animation.gif";
+    const operations: Operation[] = [{ op: "resize", width: 100 }];
+    expect(createCacheKey(source, operations, "jpeg", "", 0)).not.toBe(
+      createCacheKey(source, operations, "jpeg", "", 1),
+    );
+  });
+
   it("has no collisions across a deterministic corpus of 1000 request variations", () => {
     const keys = new Set<string>();
 

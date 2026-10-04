@@ -5,6 +5,7 @@ export const API_SCOPES = [
   "metadata",
   "batch:read",
   "batch:write",
+  "admin",
 ] as const;
 
 export type ApiScope = (typeof API_SCOPES)[number];
@@ -12,14 +13,21 @@ export type ApiScope = (typeof API_SCOPES)[number];
 export interface ApiPrincipal {
   id: string;
   scopes: readonly ApiScope[];
+  tenantId?: string;
 }
 
 interface ApiKeyDefinition {
   digest: string;
   scopes: readonly ApiScope[];
+  tenantId?: string;
 }
 
-const defaultScopes: readonly ApiScope[] = API_SCOPES;
+const defaultScopes: readonly ApiScope[] = [
+  "transform",
+  "metadata",
+  "batch:read",
+  "batch:write",
+];
 
 export function parseApiKeyDefinitions(value: string): ApiKeyDefinition[] {
   if (!value.trim()) return [];
@@ -28,11 +36,18 @@ export function parseApiKeyDefinitions(value: string): ApiKeyDefinition[] {
     const digest = rawDigest?.trim().toLowerCase() ?? "";
     if (!/^[a-f0-9]{64}$/u.test(digest))
       throw new Error("API_KEYS entries must start with a SHA-256 hex digest");
-    const scopes = rawScopes
+    const assigned = rawScopes
       ? rawScopes.split("+").map((scope) => scope.trim())
       : [...defaultScopes];
+    const tenants = assigned.filter((scope) => scope.startsWith("tenant:"));
+    const tenantId = tenants[0]?.slice("tenant:".length);
+    const scopes = assigned.filter((scope) => !scope.startsWith("tenant:"));
+    const effectiveScopes =
+      scopes.length === 0 && tenantId ? [...defaultScopes] : scopes;
     if (
-      scopes.length === 0 ||
+      effectiveScopes.length === 0 ||
+      tenants.length > 1 ||
+      (tenantId !== undefined && !/^[a-z][a-z0-9_-]{0,62}$/u.test(tenantId)) ||
       scopes.some(
         (scope): scope is string => !API_SCOPES.includes(scope as ApiScope),
       )
@@ -40,7 +55,8 @@ export function parseApiKeyDefinitions(value: string): ApiKeyDefinition[] {
       throw new Error("API_KEYS contains an unsupported scope");
     return {
       digest,
-      scopes: scopes as ApiScope[],
+      scopes: effectiveScopes as ApiScope[],
+      ...(tenantId ? { tenantId } : {}),
     };
   });
 }
@@ -79,7 +95,13 @@ export function authenticateApiKey(
     );
     if (matches) matched = definition;
   }
-  return matched ? { id: matched.digest, scopes: matched.scopes } : undefined;
+  return matched
+    ? {
+        id: matched.digest,
+        scopes: matched.scopes,
+        ...(matched.tenantId ? { tenantId: matched.tenantId } : {}),
+      }
+    : undefined;
 }
 
 export function resolveBatchClientId(
@@ -92,6 +114,7 @@ export function resolveBatchClientId(
 
 export function requiredApiScope(requestUrl: string): ApiScope {
   const pathname = requestUrl.split("?", 1)[0] ?? requestUrl;
+  if (pathname.startsWith("/v1/admin/")) return "admin";
   if (pathname === "/v1/metadata") return "metadata";
   if (pathname === "/v1/uploads" || pathname === "/v1/batch")
     return "batch:write";

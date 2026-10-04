@@ -13,6 +13,14 @@ import {
   verifySignature,
   verifyTransformSignature,
 } from "../../src/security/signing.js";
+import { authenticateApiKey, hashApiKey } from "../../src/security/api-keys.js";
+import {
+  namespaceTenantKey,
+  parseTenantPolicies,
+  tenantAllowsOperations,
+  tenantAllowsSource,
+  TenantUsage,
+} from "../../src/security/tenants.js";
 
 describe("SSRF IP filtering", () => {
   it.each([
@@ -39,6 +47,61 @@ describe("SSRF IP filtering", () => {
   );
 });
 
+describe("tenant controls", () => {
+  const policies = parseTenantPolicies(
+    JSON.stringify({
+      acme: {
+        requestsPerDay: 1,
+        bytesPerDay: 10,
+        allowedSources: ["cdn", "images.example.com"],
+        allowedOps: ["resize", "format"],
+        presets: {},
+      },
+    }),
+  );
+
+  it("associates hashed API keys with a tenant without granting admin by default", () => {
+    const principal = authenticateApiKey(
+      "tenant-key",
+      "127.0.0.1",
+      `${hashApiKey("tenant-key")}=tenant:acme+transform`,
+    );
+    expect(principal).toMatchObject({
+      tenantId: "acme",
+      scopes: ["transform"],
+    });
+    const unscoped = authenticateApiKey(undefined, "127.0.0.1", "");
+    expect(unscoped?.scopes).not.toContain("admin");
+  });
+
+  it("enforces daily request and byte quotas and tracks current usage", () => {
+    const usage = new TenantUsage(policies);
+    expect(usage.recordRequest("acme")).toBe(true);
+    expect(usage.recordRequest("acme")).toBe(false);
+    expect(usage.recordBytes("acme", 8)).toBe(true);
+    expect(usage.recordBytes("acme", 3)).toBe(false);
+    expect(usage.get("acme")).toMatchObject({ requests: 1, bytes: 8 });
+  });
+
+  it("enforces per-tenant source and operation allowlists and namespaces cache keys", () => {
+    const policy = policies.acme!;
+    expect(tenantAllowsSource(policy, "cdn:photo.jpg")).toBe(true);
+    expect(
+      tenantAllowsSource(policy, "https://images.example.com/photo.jpg"),
+    ).toBe(true);
+    expect(
+      tenantAllowsSource(policy, "https://elsewhere.example/photo.jpg"),
+    ).toBe(false);
+    expect(tenantAllowsOperations(policy, [{ op: "resize", width: 100 }])).toBe(
+      true,
+    );
+    expect(tenantAllowsOperations(policy, [{ op: "grayscale" }])).toBe(false);
+    expect(namespaceTenantKey("acme", "cache-key")).not.toBe(
+      namespaceTenantKey("other", "cache-key"),
+    );
+  });
+});
+
 describe("SSRF DNS and redirect checks", () => {
   it("connects to the validated address while preserving virtual host and TLS SNI", () => {
     const options = buildPinnedRequestOptions(
@@ -46,6 +109,7 @@ describe("SSRF DNS and redirect checks", () => {
       "8.8.8.8",
       5000,
       { authorization: "Bearer fixture", host: "attacker.example" },
+      "application/pdf",
     );
     expect(options.hostname).toBe("8.8.8.8");
     expect(options.servername).toBe("images.example.com");
@@ -54,6 +118,7 @@ describe("SSRF DNS and redirect checks", () => {
     expect(options.headers).toMatchObject({
       host: "images.example.com:8443",
       authorization: "Bearer fixture",
+      accept: "application/pdf",
     });
   });
 
@@ -317,6 +382,36 @@ describe("signed URLs", () => {
         undefined,
         undefined,
         { required: true },
+      ),
+    ).toBe(false);
+  });
+
+  it("binds frame extraction to the signature", () => {
+    const signature = createTransformSignature(
+      "https://source.example/animation.gif",
+      "w_200",
+      undefined,
+      "test-secret",
+      "1",
+    );
+    expect(
+      verifyTransformSignature(
+        "https://source.example/animation.gif",
+        "w_200",
+        undefined,
+        signature,
+        "test-secret",
+        { frame: "1" },
+      ),
+    ).toBe(true);
+    expect(
+      verifyTransformSignature(
+        "https://source.example/animation.gif",
+        "w_200",
+        undefined,
+        signature,
+        "test-secret",
+        { frame: "2" },
       ),
     ).toBe(false);
   });

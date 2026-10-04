@@ -75,6 +75,7 @@ export async function fetchRemoteImage(
     maxBytes: number;
     headers?: Readonly<Record<string, string>>;
     credentialOrigin?: string;
+    accept?: string;
   },
   dependencies: RemoteFetchDependencies = {},
 ): Promise<RemoteResponse> {
@@ -113,6 +114,7 @@ export async function fetchRemoteImage(
         current.origin === options.credentialOrigin
           ? options.headers
           : undefined,
+        options.accept,
       );
     } catch (error) {
       if (error instanceof AppError) throw error;
@@ -158,6 +160,7 @@ export function buildPinnedRequestOptions(
   address: string,
   timeoutMs: number,
   additionalHeaders?: Readonly<Record<string, string>>,
+  accept = "image/*",
 ): RequestOptions {
   const options: RequestOptions = {
     protocol: url.protocol,
@@ -167,7 +170,7 @@ export function buildPinnedRequestOptions(
     method: "GET",
     timeout: timeoutMs,
     headers: {
-      accept: "image/*",
+      accept,
       "user-agent": "image-craft-service/1.1.0",
       ...additionalHeaders,
       host: url.host,
@@ -186,11 +189,18 @@ function requestPinned(
   timeoutMs: number,
   maxBytes: number,
   additionalHeaders?: Readonly<Record<string, string>>,
+  accept?: string,
 ): Promise<PinnedResponse> {
   return new Promise((resolve, reject) => {
     const requestFn = url.protocol === "https:" ? httpsRequest : httpRequest;
     const request = requestFn(
-      buildPinnedRequestOptions(url, address, timeoutMs, additionalHeaders),
+      buildPinnedRequestOptions(
+        url,
+        address,
+        timeoutMs,
+        additionalHeaders,
+        accept,
+      ),
       (response) => {
         if (
           response.statusCode &&

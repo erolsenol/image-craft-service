@@ -14,7 +14,10 @@ for Compose, Kubernetes, Helm, Fly.io, and Railway.
 
 ## Redis and S3
 
-Redis and AI workers are optional Compose profiles. Configure an S3-compatible
+Redis, AI, and PDF workers are optional Compose profiles. Enable the PDF service
+with `PDF_ENABLED=true docker compose --profile pdf up --build`. It runs in a
+separate non-root, read-only container with no external network, resource
+quotas, and a temporary filesystem. Configure an S3-compatible
 bucket with `STORAGE_DRIVER=s3`; the same adapter stores the transform cache
 and batch inputs/results. Use provider lifecycle rules to remove expired
 objects.

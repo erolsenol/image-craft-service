@@ -34,6 +34,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils
       - run: npm ci
       - run: npm run sdk:generate
       - run: git diff --exit-code -- openapi/openapi.json packages/client/src/generated.ts packages/python/image_craft_client/_openapi.py
@@ -46,7 +47,9 @@ jobs:
       - run: npm run format:check
       - run: npm test
       - run: python3 -m unittest discover -s packages/python/tests
+      - run: python3 -m unittest discover -s workers/pdf-rasterizer/tests
       - run: python3 -m pip install build
       - run: python3 -m build packages/python
       - run: docker build -t image-craft-service:ci .
       - run: docker build -t image-craft-ai-worker:ci ./workers/ai-http-worker
+      - run: docker build -t image-craft-pdf-worker:ci ./workers/pdf-rasterizer

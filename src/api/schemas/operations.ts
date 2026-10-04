@@ -78,7 +78,9 @@ export const operationSchema = z
       .object({
         op: z.literal("format"),
         format: z.enum(["jpeg", "png", "webp", "avif", "auto"]),
-        quality: z.number().int().min(1).max(100).optional(),
+        quality: z
+          .union([z.number().int().min(1).max(100), z.literal("smart")])
+          .optional(),
       })
       .strict(),
     z

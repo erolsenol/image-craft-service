@@ -4,6 +4,7 @@ export interface TransformSigningOptions {
   readonly previousSecret?: string;
   readonly required?: boolean;
   readonly nowMilliseconds?: number;
+  readonly frame?: string;
 }
 
 export function signPath(path: string, secret: string): string {
@@ -24,9 +25,13 @@ export function createTransformSignature(
   ops: string,
   expires: string | undefined,
   secret: string,
+  frame?: string,
 ): string {
   const normalizedSource = new URL(source).toString();
-  return signPath(transformPayload(normalizedSource, ops, expires), secret);
+  return signPath(
+    transformPayload(normalizedSource, ops, expires, frame),
+    secret,
+  );
 }
 
 export function verifyTransformSignature(
@@ -61,7 +66,12 @@ export function verifyTransformSignature(
 
   let payload: string;
   try {
-    payload = transformPayload(new URL(source).toString(), ops, expires);
+    payload = transformPayload(
+      new URL(source).toString(),
+      ops,
+      expires,
+      options.frame,
+    );
   } catch {
     return false;
   }
@@ -117,6 +127,7 @@ export function signTransformUrl(
     ops,
     expiry,
     secret,
+    url.searchParams.get("frame") ?? undefined,
   );
   url.pathname = `${url.pathname.slice(0, prefixIndex + prefix.length)}${signature}/${ops}/${rawSource}`;
   url.searchParams.delete("sig");
@@ -175,8 +186,9 @@ function transformPayload(
   normalizedSource: string,
   ops: string,
   expires: string | undefined,
+  frame?: string,
 ): string {
-  return `/v1/img/${canonicalizeOps(ops)}/${normalizedSource}\n${expires ?? ""}`;
+  return `/v1/img/${canonicalizeOps(ops)}/${normalizedSource}\n${expires ?? ""}${frame === undefined ? "" : `\nframe=${frame}`}`;
 }
 
 function constantTimeSignatureMatch(

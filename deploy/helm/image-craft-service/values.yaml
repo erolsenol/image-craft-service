@@ -2,8 +2,19 @@ replicaCount: 2
 
 image:
   repository: ghcr.io/erolsenol/image-craft-service
-  tag: "1.0.0"
+  tag: "1.2.0"
   pullPolicy: IfNotPresent
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+redis:
+  existingSecret: image-craft-secrets
+  secretKey: REDIS_URL
 
 service:
   type: ClusterIP
@@ -24,6 +35,9 @@ env:
   SHARP_CONCURRENCY: "2"
   SHARP_CACHE_MEMORY_MB: "32"
   CACHE_MAX_AGE_SECONDS: "86400"
+  CACHE_DISTRIBUTED_LOCK_ENABLED: "true"
+  CACHE_DISTRIBUTED_LOCK_TTL_MS: "10000"
+  CACHE_DISTRIBUTED_LOCK_WAIT_MS: "15000"
   NAMED_SOURCES: "{}"
 
 resources:
@@ -33,3 +47,5 @@ resources:
   limits:
     cpu: "2"
     memory: 2Gi
+
+terminationGracePeriodSeconds: 45
