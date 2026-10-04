@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { createZip } from "../../src/jobs/batch-processor.js";
+import { arrayBuffer } from "node:stream/consumers";
+import { Readable } from "node:stream";
+import { createZip, createZipStream } from "../../src/jobs/batch-processor.js";
 
 describe("createZip", () => {
   it("creates a ZIP archive containing the supplied files", async () => {
@@ -18,5 +20,29 @@ describe("createZip", () => {
     await expect(
       createZip([{ name: "large.bin", buffer: Buffer.alloc(100) }], 20),
     ).rejects.toThrow("Batch archive exceeds configured size limit");
+  });
+});
+
+describe("createZipStream", () => {
+  it("opens one result stream at a time", async () => {
+    let active = 0;
+    let peak = 0;
+    const files = Array.from({ length: 100 }, (_, index) => ({
+      name: `image-${index + 1}.jpg`,
+      async open() {
+        active += 1;
+        peak = Math.max(peak, active);
+        const stream = Readable.from(Buffer.from(`image-${index + 1}`));
+        stream.once("end", () => {
+          active -= 1;
+        });
+        return stream;
+      },
+    }));
+    const archive = createZipStream(files, [], 1024 * 1024);
+    const contents = Buffer.from(await arrayBuffer(archive));
+    expect(peak).toBe(1);
+    expect(contents.includes(Buffer.from("image-100.jpg"))).toBe(true);
+    expect(contents.includes(Buffer.from("errors.json"))).toBe(true);
   });
 });

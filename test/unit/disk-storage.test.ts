@@ -3,6 +3,7 @@ import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { utimes } from "node:fs/promises";
+import { arrayBuffer } from "node:stream/consumers";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DiskStorage } from "../../src/storage/disk-storage.js";
 
@@ -21,12 +22,34 @@ afterEach(async () => {
 });
 
 describe("DiskStorage", () => {
+  it("reports only unexpired entries and their size", async () => {
+    const storage = new DiskStorage(directory, 1024);
+    await storage.set("active", Buffer.from("image"), 60);
+    await storage.set("expired", Buffer.from("old"), 0.01);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    await expect(storage.stats()).resolves.toEqual({
+      entries: 1,
+      sizeBytes: expect.any(Number),
+      maxSizeBytes: 1024,
+    });
+  });
+
   it("stores entries and removes them on delete", async () => {
     const storage = new DiskStorage(directory, 1024);
     await storage.set("entry", Buffer.from("image"), 60);
     expect(await storage.get("entry")).toEqual(Buffer.from("image"));
     await storage.delete("entry");
     expect(await storage.get("entry")).toBeUndefined();
+  });
+
+  it("streams entry values without loading the complete storage envelope", async () => {
+    const storage = new DiskStorage(directory, 1024);
+    const value = Buffer.alloc(128, 7);
+    await storage.set("stream", value, 60);
+    const stream = await storage.getStream("stream");
+    expect(stream).toBeDefined();
+    expect(Buffer.from(await arrayBuffer(stream!))).toEqual(value);
   });
 
   it("expires entries according to their TTL", async () => {

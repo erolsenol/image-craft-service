@@ -1,4 +1,108 @@
 import { z } from "zod";
+import {
+  parseApiKeyDefinitions,
+  validateApiKeyDefinitions,
+} from "../security/api-keys.js";
+import {
+  parseTenantPolicies,
+  type TenantPolicies,
+} from "../security/tenants.js";
+
+const namedSourceSchema = z
+  .object({
+    origin: z.string().url(),
+    allowedHosts: z.array(z.string().regex(/^[a-z0-9.-]+$/iu)).min(1),
+    headers: z.record(z.string().min(1), z.string().max(4096)).default({}),
+  })
+  .superRefine((source, context) => {
+    try {
+      const origin = new URL(source.origin);
+      if (
+        !["http:", "https:"].includes(origin.protocol) ||
+        origin.username ||
+        origin.password ||
+        origin.search ||
+        origin.hash
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["origin"],
+          message: "Named source origins must be credential-free HTTP(S) URLs",
+        });
+      }
+      if (
+        !source.allowedHosts.some(
+          (host) => host.toLowerCase() === origin.hostname.toLowerCase(),
+        )
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["allowedHosts"],
+          message: "allowedHosts must include the origin hostname",
+        });
+      }
+    } catch {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["origin"],
+        message: "Named source origin must be a valid URL",
+      });
+    }
+    for (const [name, value] of Object.entries(source.headers)) {
+      if (
+        !["authorization", "x-api-key", "x-access-token"].includes(
+          name.toLowerCase(),
+        ) ||
+        /[\r\n\0]/u.test(value)
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["headers", name],
+          message:
+            "Named source credentials may use authorization, x-api-key, or x-access-token without control characters",
+        });
+      }
+    }
+  });
+
+const namedSourcesSchema = z
+  .string()
+  .default("{}")
+  .transform((value, context) => {
+    if (!value.trim()) return {};
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(value);
+    } catch {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "NAMED_SOURCES must be valid JSON",
+      });
+      return {};
+    }
+    const parsed = z
+      .record(z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/u), namedSourceSchema)
+      .safeParse(decoded);
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues)
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: issue.path,
+          message: issue.message,
+        });
+      return {};
+    }
+    return parsed.data;
+  });
+
+const optionalSecret = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().min(32).optional(),
+);
+const optionalValue = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().min(1).optional(),
+);
 
 export const envSchema = z
   .object({
@@ -19,6 +123,46 @@ export const envSchema = z
       .positive()
       .max(100_000_000)
       .default(40_000_000),
+    MAX_ANIMATION_FRAMES: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(100)
+      .default(100),
+    SMART_QUALITY_SSIM_THRESHOLD: z.coerce
+      .number()
+      .min(0.8)
+      .max(0.999)
+      .default(0.98),
+    PDF_ENABLED: z.coerce.boolean().default(false),
+    PDF_RASTERIZER_URL: z
+      .string()
+      .url()
+      .refine((value) => {
+        const url = new URL(value);
+        return (
+          ["http:", "https:"].includes(url.protocol) &&
+          !url.username &&
+          !url.password
+        );
+      }, "PDF_RASTERIZER_URL must be a credential-free HTTP(S) URL")
+      .default("http://pdf-worker:8000"),
+    PDF_MAX_DPI: z.coerce.number().int().min(36).max(300).default(200),
+    PDF_MAX_PAGES: z.coerce.number().int().positive().max(100).default(50),
+    PDF_CPU_SECONDS: z.coerce.number().int().positive().max(30).default(5),
+    PDF_MEMORY_MB: z.coerce.number().int().min(128).max(1024).default(512),
+    PDF_WORKER_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .min(500)
+      .max(30_000)
+      .default(10_000),
+    PDF_MAX_PIXELS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(40_000_000)
+      .default(20_000_000),
     MAX_OUTPUT_DIMENSION: z.coerce
       .number()
       .int()
@@ -32,14 +176,145 @@ export const envSchema = z
       .max(300_000)
       .default(30_000),
     CONCURRENCY_LIMIT: z.coerce.number().int().positive().max(16).default(8),
+    REMOTE_TRANSFORM_RATE_LIMIT: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(10_000)
+      .default(60),
+    REMOTE_TRANSFORM_RATE_WINDOW_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(3_600_000)
+      .default(60_000),
     IMAGE_PROCESSING_CONCURRENCY: z.coerce
       .number()
       .int()
       .positive()
       .max(4)
       .default(2),
+    SHARP_CONCURRENCY: z.coerce.number().int().positive().max(8).default(2),
+    SHARP_CACHE_MEMORY_MB: z.coerce.number().int().min(16).max(256).default(32),
+    MAX_OPS_CHAIN: z.coerce.number().int().positive().max(50).default(20),
+    API_KEYS: z.string().default("").refine(validateApiKeyDefinitions, {
+      message:
+        "API_KEYS must contain SHA-256 digests with optional allowed scopes",
+    }),
+    ADMIN_DASHBOARD_ENABLED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    TENANTS: z
+      .string()
+      .default("{}")
+      .transform((value, context): TenantPolicies => {
+        try {
+          return parseTenantPolicies(value);
+        } catch {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "TENANTS must be valid JSON with valid tenant policies",
+          });
+          return {};
+        }
+      }),
+    API_RATE_LIMIT: z.coerce.number().int().positive().max(10_000).default(120),
+    API_RATE_WINDOW_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(3_600_000)
+      .default(60_000),
+    CORS_ORIGINS: z
+      .string()
+      .default("")
+      .refine((value) => {
+        if (!value.trim()) return true;
+        return value.split(",").every((origin) => {
+          try {
+            const parsed = new URL(origin.trim());
+            return (
+              ["http:", "https:"].includes(parsed.protocol) &&
+              parsed.origin === origin.trim() &&
+              !parsed.username &&
+              !parsed.password
+            );
+          } catch {
+            return false;
+          }
+        });
+      }, "CORS_ORIGINS must be a comma-separated list of exact HTTP(S) origins"),
+    OTEL_ENABLED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    OTEL_EXPORTER_OTLP_ENDPOINT: z
+      .string()
+      .url()
+      .default("http://localhost:4318")
+      .refine((value) => {
+        try {
+          const endpoint = new URL(value);
+          return (
+            ["http:", "https:"].includes(endpoint.protocol) &&
+            !endpoint.username &&
+            !endpoint.password
+          );
+        } catch {
+          return false;
+        }
+      }, "OTEL_EXPORTER_OTLP_ENDPOINT must be an HTTP(S) URL without credentials"),
     ALLOWED_HOSTS: z.string().default(""),
+    NAMED_SOURCES: namedSourcesSchema,
     SIGNING_SECRET: z.string().optional(),
+    SIGNING_SECRET_PREVIOUS: z.string().optional(),
+    SIGNING_REQUIRED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    PUBLIC_BASE_URL: z.preprocess(
+      (value) => (value === "" ? undefined : value),
+      z
+        .string()
+        .url()
+        .refine((value) => {
+          try {
+            const url = new URL(value);
+            return (
+              ["http:", "https:"].includes(url.protocol) &&
+              !url.username &&
+              !url.password &&
+              !url.search &&
+              !url.hash
+            );
+          } catch {
+            return false;
+          }
+        }, "PUBLIC_BASE_URL must be a credential-free HTTP(S) URL without query or fragment")
+        .optional(),
+    ),
+    STORAGE_DRIVER: z.enum(["disk", "s3"]).default("disk"),
+    CACHE_ENABLED: z
+      .enum(["true", "false"])
+      .default("true")
+      .transform((value) => value === "true"),
+    CACHE_DISTRIBUTED_LOCK_ENABLED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    CACHE_DISTRIBUTED_LOCK_TTL_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(60_000)
+      .default(10_000),
+    CACHE_DISTRIBUTED_LOCK_WAIT_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(300_000)
+      .default(15_000),
     CACHE_DIR: z.string().default("/tmp/image-craft-cache"),
     CACHE_MAX_SIZE_BYTES: z.coerce
       .number()
@@ -47,13 +322,56 @@ export const envSchema = z
       .positive()
       .default(536_870_912),
     CACHE_MAX_AGE_SECONDS: z.coerce.number().int().nonnegative().default(86400),
+    S3_ENDPOINT: z.preprocess(
+      (value) => (value === "" ? undefined : value),
+      z.string().url().optional(),
+    ),
+    S3_REGION: z.string().min(1).default("us-east-1"),
+    S3_BUCKET: optionalValue,
+    S3_ACCESS_KEY_ID: optionalValue,
+    S3_SECRET_ACCESS_KEY: optionalValue,
+    S3_FORCE_PATH_STYLE: z
+      .enum(["true", "false"])
+      .default("true")
+      .transform((value) => value === "true"),
+    S3_PRESIGNED_UPLOAD_TTL_SECONDS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(3600)
+      .default(900),
     QUEUE_ENABLED: z
       .enum(["true", "false"])
       .default("false")
       .transform((value) => value === "true"),
     REDIS_URL: z.string().url().default("redis://127.0.0.1:6379"),
-    BATCH_MAX_ITEMS: z.coerce.number().int().positive().max(100).default(20),
+    BATCH_MAX_ITEMS: z.coerce.number().int().positive().max(100).default(100),
     BATCH_CONCURRENCY: z.coerce.number().int().positive().max(4).default(1),
+    BATCH_CONCURRENCY_PER_API_KEY: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(100)
+      .default(2),
+    BATCH_RATE_LIMIT_PER_API_KEY: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(10_000)
+      .default(10),
+    BATCH_RATE_WINDOW_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(3_600_000)
+      .default(60_000),
+    BATCH_JOB_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+    BATCH_BACKOFF_DELAY_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(300_000)
+      .default(1_000),
     BATCH_MAX_RESULT_BYTES: z.coerce
       .number()
       .int()
@@ -61,6 +379,7 @@ export const envSchema = z
       .max(128 * 1024 * 1024)
       .default(128 * 1024 * 1024),
     BATCH_RESULT_TTL_SECONDS: z.coerce.number().int().positive().default(86400),
+    WEBHOOK_SIGNING_SECRET: optionalSecret,
     REMOVE_BACKGROUND_ENABLED: z
       .enum(["true", "false"])
       .default("false")
@@ -68,7 +387,7 @@ export const envSchema = z
     REMBG_URL: z
       .string()
       .url()
-      .default("http://rembg:7000")
+      .default("http://rembg:8000")
       .refine((value) => {
         const url = new URL(value);
         return (
@@ -77,8 +396,96 @@ export const envSchema = z
           !url.password
         );
       }, "REMBG_URL must be an HTTP(S) URL without credentials"),
+    UPSCALE_ENABLED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    UPSCALE_URL: z
+      .string()
+      .url()
+      .default("http://realesrgan:8000")
+      .refine(
+        isCredentialFreeHttpUrl,
+        "UPSCALE_URL must be an HTTP(S) URL without credentials",
+      ),
+    AUTO_ALT_TEXT_ENABLED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    AUTO_ALT_TEXT_URL: z
+      .string()
+      .url()
+      .default("http://vision-worker:8000")
+      .refine(
+        isCredentialFreeHttpUrl,
+        "AUTO_ALT_TEXT_URL must be an HTTP(S) URL without credentials",
+      ),
+    NSFW_CHECK_ENABLED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    NSFW_CHECK_URL: z
+      .string()
+      .url()
+      .default("http://nsfw-worker:8000")
+      .refine(
+        isCredentialFreeHttpUrl,
+        "NSFW_CHECK_URL must be an HTTP(S) URL without credentials",
+      ),
+    AI_PLUGIN_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(300_000)
+      .default(20_000),
   })
   .superRefine((settings, context) => {
+    try {
+      for (const key of parseApiKeyDefinitions(settings.API_KEYS)) {
+        if (key.tenantId && !settings.TENANTS[key.tenantId])
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["API_KEYS"],
+            message: `API_KEYS references unconfigured tenant "${key.tenantId}"`,
+          });
+      }
+    } catch {
+      // The API_KEYS field refinement reports the malformed key format.
+    }
+    if (settings.AI_PLUGIN_TIMEOUT_MS > settings.REQUEST_TIMEOUT_MS)
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["AI_PLUGIN_TIMEOUT_MS"],
+        message: "AI_PLUGIN_TIMEOUT_MS cannot exceed REQUEST_TIMEOUT_MS",
+      });
+    if (settings.CACHE_DISTRIBUTED_LOCK_WAIT_MS > settings.REQUEST_TIMEOUT_MS)
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["CACHE_DISTRIBUTED_LOCK_WAIT_MS"],
+        message:
+          "CACHE_DISTRIBUTED_LOCK_WAIT_MS cannot exceed REQUEST_TIMEOUT_MS",
+      });
+    if (settings.STORAGE_DRIVER === "s3" && !settings.S3_BUCKET)
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["S3_BUCKET"],
+        message: "S3_BUCKET is required when STORAGE_DRIVER=s3",
+      });
+    if (
+      Boolean(settings.S3_ACCESS_KEY_ID) !==
+      Boolean(settings.S3_SECRET_ACCESS_KEY)
+    )
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["S3_SECRET_ACCESS_KEY"],
+        message: "S3 access key ID and secret access key must be set together",
+      });
+    if (settings.S3_ENDPOINT && !isCredentialFreeHttpUrl(settings.S3_ENDPOINT))
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["S3_ENDPOINT"],
+        message: "S3_ENDPOINT must use HTTP(S)",
+      });
     if (
       settings.MAX_UPLOAD_BYTES * settings.CONCURRENCY_LIMIT >
       256 * 1024 * 1024
@@ -116,6 +523,13 @@ export const envSchema = z
           "BATCH_MAX_RESULT_BYTES times BATCH_CONCURRENCY must not exceed 128 MiB",
       });
     }
+    if (settings.PDF_WORKER_TIMEOUT_MS > settings.REQUEST_TIMEOUT_MS) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["PDF_WORKER_TIMEOUT_MS"],
+        message: "PDF_WORKER_TIMEOUT_MS must not exceed REQUEST_TIMEOUT_MS",
+      });
+    }
   });
 
 export const config = envSchema.parse(process.env);
@@ -123,3 +537,16 @@ export type AppConfig = typeof config;
 export const allowedHosts = config.ALLOWED_HOSTS.split(",")
   .map((host) => host.trim().toLowerCase())
   .filter(Boolean);
+
+function isCredentialFreeHttpUrl(value: string): boolean {
+  try {
+    const endpoint = new URL(value);
+    return (
+      ["http:", "https:"].includes(endpoint.protocol) &&
+      !endpoint.username &&
+      !endpoint.password
+    );
+  } catch {
+    return false;
+  }
+}

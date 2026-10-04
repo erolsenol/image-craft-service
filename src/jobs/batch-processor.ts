@@ -1,60 +1,214 @@
 import { ZipArchive } from "archiver";
+import { Transform, PassThrough } from "node:stream";
+import type { Readable } from "node:stream";
 import { AppError } from "../core/errors.js";
 import { runImageOperations } from "../plugins/run-operations.js";
 import { createPluginRegistry } from "../plugins/registry.js";
 import type { AppConfig } from "../config/index.js";
 import { fetchRemoteImage } from "../security/ssrf.js";
 import type { Storage } from "../storage/storage.js";
-import type { BatchRequest } from "./types.js";
+import type {
+  BatchJobResult,
+  BatchProgress,
+  BatchRequest,
+  BatchResultFile,
+} from "./types.js";
 import { ConcurrencyLimiter } from "../security/concurrency.js";
+import { validateImage } from "../security/limits.js";
+import { withSpan } from "../observability/tracing.js";
+import {
+  namespaceTenantKey,
+  tenantAllowsOperations,
+  tenantAllowsSource,
+  type TenantUsage,
+} from "../security/tenants.js";
 
 export async function processBatch(
   input: BatchRequest,
   jobId: string,
   config: AppConfig,
   storage: Storage,
-  onProgress: (progress: number) => Promise<void>,
+  onProgress: (progress: BatchProgress) => Promise<void>,
   processingLimiter = new ConcurrencyLimiter(
     config.IMAGE_PROCESSING_CONCURRENCY,
   ),
-): Promise<void> {
-  const outputs: Array<{ name: string; buffer: Buffer }> = [];
-  let totalOutputBytes = 0;
+  observeOperation?: (operation: string, durationSeconds: number) => void,
+  tenantUsage?: TenantUsage,
+): Promise<BatchJobResult> {
+  const files: BatchResultFile[] = [];
+  const errors: BatchJobResult["errors"] = [];
+  const plugins = createPluginRegistry(config);
   const allowedHosts = config.ALLOWED_HOSTS.split(",")
     .map((host) => host.trim().toLowerCase())
     .filter(Boolean);
-  const plugins = createPluginRegistry(config);
+  let totalOutputBytes = 0;
+  let completedItems = 0;
 
   for (const [index, source] of input.sources.entries()) {
-    const remote = await fetchRemoteImage(source, {
-      allowedHosts,
-      timeoutMs: config.REQUEST_TIMEOUT_MS,
-      maxBytes: config.MAX_UPLOAD_BYTES,
+    try {
+      const tenantPolicy = input.tenantId
+        ? config.TENANTS[input.tenantId]
+        : undefined;
+      if (tenantPolicy && !tenantAllowsSource(tenantPolicy, source))
+        throw new AppError("Source is not allowed for this tenant", 403);
+      if (tenantPolicy && !tenantAllowsOperations(tenantPolicy, input.ops))
+        throw new AppError("Operation is not allowed for this tenant", 403);
+      const sourceBuffer = source.startsWith("file_")
+        ? await loadOwnedUpload(storage, source, input.apiKeyId, input.tenantId)
+        : (
+            await withSpan(
+              "image.fetch",
+              { "server.address": new URL(source).hostname },
+              () =>
+                fetchRemoteImage(source, {
+                  allowedHosts,
+                  timeoutMs: config.REQUEST_TIMEOUT_MS,
+                  maxBytes: config.MAX_UPLOAD_BYTES,
+                }),
+            )
+          ).body;
+      if (!sourceBuffer) throw new AppError("Uploaded source has expired", 404);
+      if (
+        input.tenantId &&
+        tenantUsage &&
+        !source.startsWith("file_") &&
+        !tenantUsage.recordBytes(input.tenantId, sourceBuffer.length)
+      )
+        throw new AppError("Tenant daily byte quota exceeded", 429);
+      await validateImage(sourceBuffer, config.MAX_INPUT_PIXELS);
+      const result = await withSpan(
+        "image.transform",
+        { "image.operation_count": input.ops.length },
+        () =>
+          runImageOperations(
+            sourceBuffer,
+            input.ops,
+            plugins,
+            config.MAX_INPUT_PIXELS,
+            config.MAX_OUTPUT_DIMENSION,
+            processingLimiter,
+            undefined,
+            observeOperation,
+          ),
+      );
+      if (
+        totalOutputBytes + result.buffer.byteLength >
+        config.BATCH_MAX_RESULT_BYTES
+      )
+        throw new AppError("Batch output exceeds configured size limit", 413);
+      totalOutputBytes += result.buffer.byteLength;
+      const name = `image-${String(index + 1).padStart(3, "0")}.${extensionFor(result.contentType)}`;
+      const storageKey = namespaceTenantKey(
+        input.tenantId,
+        `batch-result:${jobId}:${index}`,
+      );
+      await storage.set(
+        storageKey,
+        result.buffer,
+        config.BATCH_RESULT_TTL_SECONDS,
+      );
+      files.push({ storageKey, name });
+    } catch {
+      errors.push({
+        index,
+        code: "ITEM_PROCESSING_FAILED",
+        message: "This image could not be processed.",
+      });
+    }
+    completedItems += 1;
+    await onProgress({
+      percentage: Math.round((completedItems / input.sources.length) * 100),
+      completedItems,
+      totalItems: input.sources.length,
+      errors: [...errors],
     });
-    const result = await runImageOperations(
-      remote.body,
-      input.ops,
-      plugins,
-      config.MAX_INPUT_PIXELS,
-      config.MAX_OUTPUT_DIMENSION,
-      processingLimiter,
-    );
-    totalOutputBytes += result.buffer.byteLength;
-    if (totalOutputBytes > config.BATCH_MAX_RESULT_BYTES)
-      throw new AppError("Batch output exceeds configured size limit", 413);
-    outputs.push({
-      name: `image-${String(index + 1).padStart(3, "0")}.${extensionFor(result.contentType)}`,
-      buffer: result.buffer,
-    });
-    await onProgress(Math.round(((index + 1) / input.sources.length) * 100));
   }
 
-  const zip = await createZip(outputs, config.BATCH_MAX_RESULT_BYTES);
-  await storage.set(
-    `batch-result:${jobId}`,
-    zip,
-    config.BATCH_RESULT_TTL_SECONDS,
-  );
+  return {
+    files,
+    errors,
+    completedItems,
+    totalItems: input.sources.length,
+  };
+}
+
+async function loadOwnedUpload(
+  storage: Storage,
+  fileId: string,
+  apiKeyId: string,
+  tenantId?: string,
+): Promise<Buffer | undefined> {
+  const [owner, image] = await Promise.all([
+    storage.get(namespaceTenantKey(tenantId, `batch-upload-owner:${fileId}`)),
+    storage.get(namespaceTenantKey(tenantId, `batch-upload:${fileId}`)),
+  ]);
+  if (!owner || owner.toString("utf8") !== apiKeyId) return undefined;
+  return image;
+}
+
+export function createZipStream(
+  files: ReadonlyArray<{
+    name: string;
+    open: () => Promise<Readable | undefined>;
+  }>,
+  errors: unknown,
+  maxBytes: number,
+): Readable {
+  const archive = new ZipArchive({ zlib: { level: 6 } });
+  const output = new PassThrough();
+  let totalBytes = 0;
+  const outputLimit = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      totalBytes += chunk.length;
+      if (totalBytes > maxBytes) {
+        callback(
+          new AppError("Batch archive exceeds configured size limit", 413),
+        );
+        return;
+      }
+      callback(null, chunk);
+    },
+  });
+  archive.on("error", (error: Error) => output.destroy(error));
+  outputLimit.on("error", (error: Error) => {
+    archive.abort();
+    output.destroy(error);
+  });
+  archive.pipe(outputLimit).pipe(output);
+  let nextFile = 0;
+  let errorsAdded = false;
+  let finalized = false;
+  const appendNext = async () => {
+    try {
+      if (nextFile < files.length) {
+        const file = files[nextFile++];
+        const stream = await file!.open();
+        if (!stream) throw new AppError("Batch result has expired", 410);
+        stream.once("error", (error) => {
+          archive.abort();
+          output.destroy(error);
+        });
+        archive.append(stream, { name: file!.name });
+        return;
+      }
+      if (!errorsAdded) {
+        errorsAdded = true;
+        archive.append(JSON.stringify(errors, null, 2), {
+          name: "errors.json",
+        });
+        return;
+      }
+      if (finalized) return;
+      finalized = true;
+      await archive.finalize();
+    } catch (error) {
+      archive.abort();
+      output.destroy(error instanceof Error ? error : new Error("ZIP failed"));
+    }
+  };
+  archive.on("entry", () => void appendNext());
+  void appendNext();
+  return output;
 }
 
 export async function createZip(

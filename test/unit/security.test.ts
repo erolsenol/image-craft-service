@@ -1,10 +1,26 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildPinnedRequestOptions,
+  createPinnedLookup,
   fetchRemoteImage,
   isPublicIp,
   resolvePublicAddresses,
 } from "../../src/security/ssrf.js";
-import { signPath, verifySignature } from "../../src/security/signing.js";
+import {
+  createTransformSignature,
+  signPath,
+  signTransformUrl,
+  verifySignature,
+  verifyTransformSignature,
+} from "../../src/security/signing.js";
+import { authenticateApiKey, hashApiKey } from "../../src/security/api-keys.js";
+import {
+  namespaceTenantKey,
+  parseTenantPolicies,
+  tenantAllowsOperations,
+  tenantAllowsSource,
+  TenantUsage,
+} from "../../src/security/tenants.js";
 
 describe("SSRF IP filtering", () => {
   it.each([
@@ -31,7 +47,98 @@ describe("SSRF IP filtering", () => {
   );
 });
 
+describe("tenant controls", () => {
+  const policies = parseTenantPolicies(
+    JSON.stringify({
+      acme: {
+        requestsPerDay: 1,
+        bytesPerDay: 10,
+        allowedSources: ["cdn", "images.example.com"],
+        allowedOps: ["resize", "format"],
+        presets: {},
+      },
+    }),
+  );
+
+  it("associates hashed API keys with a tenant without granting admin by default", () => {
+    const principal = authenticateApiKey(
+      "tenant-key",
+      "127.0.0.1",
+      `${hashApiKey("tenant-key")}=tenant:acme+transform`,
+    );
+    expect(principal).toMatchObject({
+      tenantId: "acme",
+      scopes: ["transform"],
+    });
+    const unscoped = authenticateApiKey(undefined, "127.0.0.1", "");
+    expect(unscoped?.scopes).not.toContain("admin");
+  });
+
+  it("enforces daily request and byte quotas and tracks current usage", () => {
+    const usage = new TenantUsage(policies);
+    expect(usage.recordRequest("acme")).toBe(true);
+    expect(usage.recordRequest("acme")).toBe(false);
+    expect(usage.recordBytes("acme", 8)).toBe(true);
+    expect(usage.recordBytes("acme", 3)).toBe(false);
+    expect(usage.get("acme")).toMatchObject({ requests: 1, bytes: 8 });
+  });
+
+  it("enforces per-tenant source and operation allowlists and namespaces cache keys", () => {
+    const policy = policies.acme!;
+    expect(tenantAllowsSource(policy, "cdn:photo.jpg")).toBe(true);
+    expect(
+      tenantAllowsSource(policy, "https://images.example.com/photo.jpg"),
+    ).toBe(true);
+    expect(
+      tenantAllowsSource(policy, "https://elsewhere.example/photo.jpg"),
+    ).toBe(false);
+    expect(tenantAllowsOperations(policy, [{ op: "resize", width: 100 }])).toBe(
+      true,
+    );
+    expect(tenantAllowsOperations(policy, [{ op: "grayscale" }])).toBe(false);
+    expect(namespaceTenantKey("acme", "cache-key")).not.toBe(
+      namespaceTenantKey("other", "cache-key"),
+    );
+  });
+});
+
 describe("SSRF DNS and redirect checks", () => {
+  it("connects to the validated address while preserving virtual host and TLS SNI", () => {
+    const options = buildPinnedRequestOptions(
+      new URL("https://images.example.com:8443/path/photo.jpg?width=80"),
+      "8.8.8.8",
+      5000,
+      { authorization: "Bearer fixture", host: "attacker.example" },
+      "application/pdf",
+    );
+    expect(options.hostname).toBe("8.8.8.8");
+    expect(options.servername).toBe("images.example.com");
+    expect(options.port).toBe(8443);
+    expect(options.path).toBe("/path/photo.jpg?width=80");
+    expect(options.headers).toMatchObject({
+      host: "images.example.com:8443",
+      authorization: "Bearer fixture",
+      accept: "application/pdf",
+    });
+  });
+
+  it("returns the pinned result in both Node lookup callback shapes", () => {
+    const lookupAddress = createPinnedLookup("8.8.8.8");
+    lookupAddress(
+      "images.example",
+      { all: false },
+      (error, address, family) => {
+        expect(error).toBeNull();
+        expect(address).toBe("8.8.8.8");
+        expect(family).toBe(4);
+      },
+    );
+    lookupAddress("images.example", { all: true }, (error, address) => {
+      expect(error).toBeNull();
+      expect(address).toEqual([{ address: "8.8.8.8", family: 4 }]);
+    });
+  });
+
   it("rejects a hostname when any DNS answer is non-public", async () => {
     await expect(
       resolvePublicAddresses("mixed.example", async () => [
@@ -63,6 +170,70 @@ describe("SSRF DNS and redirect checks", () => {
     ).rejects.toThrow("Remote host is not allowed");
     expect(requested).toEqual(["public.example"]);
   });
+
+  it("re-resolves and blocks a same-host DNS rebinding redirect", async () => {
+    let resolutions = 0;
+    const requested: string[] = [];
+    await expect(
+      fetchRemoteImage(
+        "https://rebound.example/image.jpg",
+        { allowedHosts: [], timeoutMs: 1000, maxBytes: 1000 },
+        {
+          resolveAddresses: async () => {
+            resolutions += 1;
+            return resolutions === 1 ? ["8.8.8.8"] : ["10.0.0.2"];
+          },
+          requestPinned: async (url) => {
+            requested.push(url.hostname);
+            return {
+              statusCode: 302,
+              headers: { location: "/redirected.jpg" },
+              body: Buffer.alloc(0),
+            };
+          },
+        },
+      ),
+    ).rejects.toThrow("Remote host is not allowed");
+    expect(resolutions).toBe(2);
+    expect(requested).toEqual(["rebound.example"]);
+  });
+
+  it("does not forward named-source credentials to redirected hosts", async () => {
+    const forwardedHeaders: (Readonly<Record<string, string>> | undefined)[] =
+      [];
+    const response = await fetchRemoteImage(
+      "https://cdn.example.com/image.png",
+      {
+        allowedHosts: ["cdn.example.com", "images.example.com"],
+        credentialOrigin: "https://cdn.example.com",
+        headers: { authorization: "Bearer private" },
+        timeoutMs: 1000,
+        maxBytes: 1000,
+      },
+      {
+        resolveAddresses: async () => ["8.8.8.8"],
+        requestPinned: async (url, _address, _timeout, _bytes, headers) => {
+          forwardedHeaders.push(headers);
+          return url.hostname === "cdn.example.com"
+            ? {
+                statusCode: 302,
+                headers: { location: "https://images.example.com/final.png" },
+                body: Buffer.alloc(0),
+              }
+            : {
+                statusCode: 200,
+                headers: { "content-type": "image/png" },
+                body: Buffer.from("image"),
+              };
+        },
+      },
+    );
+    expect(response.body).toEqual(Buffer.from("image"));
+    expect(forwardedHeaders).toEqual([
+      { authorization: "Bearer private" },
+      undefined,
+    ]);
+  });
 });
 
 describe("signed URLs", () => {
@@ -80,5 +251,168 @@ describe("signed URLs", () => {
     ).toBe(true);
     expect(verifySignature("other", signature, "test-secret")).toBe(false);
     expect(verifySignature("path", undefined, "test-secret")).toBe(false);
+  });
+
+  it("signs transform URLs with an optional expiry and validates the signature", () => {
+    const url = signTransformUrl(
+      "https://images.example/v1/img/w_400,f_webp/https://source.example/a.jpg",
+      "test-secret",
+      "2000000000",
+    );
+    const signed = new URL(url);
+    const signature = signed.pathname.split("/")[3];
+    expect(signature).toMatch(/^[a-f0-9]{64}$/u);
+    expect(signed.searchParams.get("expires")).toBe("2000000000");
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "w_400,f_webp",
+        "2000000000",
+        signature,
+        "test-secret",
+        1_900_000_000_000,
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects tampered URLs and expired signatures", () => {
+    const signature = createTransformSignature(
+      "https://source.example/a.jpg",
+      "w_400",
+      "1000",
+      "test-secret",
+    );
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "w_800",
+        "1000",
+        signature,
+        "test-secret",
+        1_000_000,
+      ),
+    ).toBe(false);
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "w_400",
+        "1000",
+        signature,
+        "test-secret",
+        1_001_000,
+      ),
+    ).toBe(false);
+  });
+
+  it("allows unsigned requests only when signing is disabled", () => {
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "w_400",
+        undefined,
+        undefined,
+        undefined,
+      ),
+    ).toBe(true);
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "w_400",
+        "1000",
+        undefined,
+        undefined,
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects tampered sources and wrong secrets while accepting the previous secret", () => {
+    const signature = createTransformSignature(
+      "https://source.example/a.jpg",
+      "w_400,h_200,f_webp",
+      undefined,
+      "old-secret",
+    );
+
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "h_200,w_400,f_webp",
+        undefined,
+        signature,
+        "new-secret",
+        { previousSecret: "old-secret" },
+      ),
+    ).toBe(true);
+    expect(
+      verifyTransformSignature(
+        "https://source.example/b.jpg",
+        "h_200,w_400,f_webp",
+        undefined,
+        signature,
+        "new-secret",
+      ),
+    ).toBe(false);
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "h_200,w_400,f_webp",
+        undefined,
+        signature,
+        "wrong-secret",
+      ),
+    ).toBe(false);
+  });
+
+  it("requires a signature when signing is required", () => {
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "w_400",
+        undefined,
+        undefined,
+        "secret",
+        { required: true },
+      ),
+    ).toBe(false);
+    expect(
+      verifyTransformSignature(
+        "https://source.example/a.jpg",
+        "w_400",
+        undefined,
+        undefined,
+        undefined,
+        { required: true },
+      ),
+    ).toBe(false);
+  });
+
+  it("binds frame extraction to the signature", () => {
+    const signature = createTransformSignature(
+      "https://source.example/animation.gif",
+      "w_200",
+      undefined,
+      "test-secret",
+      "1",
+    );
+    expect(
+      verifyTransformSignature(
+        "https://source.example/animation.gif",
+        "w_200",
+        undefined,
+        signature,
+        "test-secret",
+        { frame: "1" },
+      ),
+    ).toBe(true);
+    expect(
+      verifyTransformSignature(
+        "https://source.example/animation.gif",
+        "w_200",
+        undefined,
+        signature,
+        "test-secret",
+        { frame: "2" },
+      ),
+    ).toBe(false);
   });
 });

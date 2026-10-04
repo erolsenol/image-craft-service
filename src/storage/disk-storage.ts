@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
 import {
+  open,
   mkdir,
   readFile,
   readdir,
@@ -10,7 +12,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
-import type { Storage } from "./storage.js";
+import type { Storage, StorageStats } from "./storage.js";
 
 interface Entry {
   path: string;
@@ -55,6 +57,47 @@ export class DiskStorage implements Storage {
     return entry.value;
   }
 
+  async getStream(key: string) {
+    const path = this.pathFor(key);
+    let handle;
+    try {
+      handle = await open(path, "r");
+    } catch (error) {
+      if (isNotFound(error)) return undefined;
+      throw error;
+    }
+    try {
+      const prefix = Buffer.alloc(512);
+      const { bytesRead } = await handle.read(prefix, 0, prefix.length, 0);
+      const separator = prefix.subarray(0, bytesRead).indexOf(0x0a);
+      if (separator < 0) {
+        await this.delete(key);
+        return undefined;
+      }
+      const metadata: unknown = JSON.parse(
+        prefix.subarray(0, separator).toString("utf8"),
+      );
+      if (
+        typeof metadata !== "object" ||
+        metadata === null ||
+        !("expiresAt" in metadata) ||
+        typeof metadata.expiresAt !== "number" ||
+        metadata.expiresAt <= Date.now()
+      ) {
+        await this.delete(key);
+        return undefined;
+      }
+      const now = new Date();
+      await utimes(path, now, now);
+      return createReadStream(path, { start: separator + 1 });
+    } catch (error) {
+      if (isNotFound(error)) return undefined;
+      throw error;
+    } finally {
+      await handle.close();
+    }
+  }
+
   async set(key: string, value: Buffer, ttlSeconds: number): Promise<void> {
     if (!Number.isFinite(ttlSeconds) || ttlSeconds < 0)
       throw new Error("ttlSeconds must be a non-negative number");
@@ -90,6 +133,38 @@ export class DiskStorage implements Storage {
 
   async delete(key: string): Promise<void> {
     await this.withMutation(() => removeIfPresent(this.pathFor(key)));
+  }
+
+  async stats(): Promise<StorageStats> {
+    let entries = 0;
+    let sizeBytes = 0;
+    let names: string[];
+    try {
+      names = await readdir(this.directory);
+    } catch (error) {
+      if (isNotFound(error))
+        return { entries, sizeBytes, maxSizeBytes: this.maxSizeBytes };
+      throw error;
+    }
+
+    for (const name of names) {
+      if (!name.endsWith(".entry")) continue;
+      const path = join(this.directory, name);
+      try {
+        const [contents, metadata] = await Promise.all([
+          readFile(path),
+          stat(path),
+        ]);
+        const entry = decodeEntry(contents);
+        if (entry && entry.expiresAt > Date.now()) {
+          entries += 1;
+          sizeBytes += metadata.size;
+        }
+      } catch (error) {
+        if (!isNotFound(error)) throw error;
+      }
+    }
+    return { entries, sizeBytes, maxSizeBytes: this.maxSizeBytes };
   }
 
   private pathFor(key: string): string {

@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Image Craft Playground</title>
+    <style>
+      body {
+        font: 16px system-ui;
+        max-width: 850px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      label {
+        display: block;
+        margin: 0.8rem 0;
+      }
+      input,
+      select,
+      button {
+        padding: 0.45rem;
+      }
+      img {
+        display: block;
+        max-width: 100%;
+        max-height: 420px;
+        margin: 1rem 0;
+      }
+      pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        background: #f2f2f2;
+        padding: 1rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Image Craft Playground</h1>
+    <p>Try remote URL transforms or upload a local image for a live preview.</p>
+    <label
+      >API origin <input id="api" value="http://localhost:3000" size="36"
+    /></label>
+    <label
+      >Remote image URL
+      <input
+        id="source"
+        type="url"
+        placeholder="https://example.com/photo.jpg"
+        size="56"
+    /></label>
+    <label
+      >Or upload
+      <input
+        id="file"
+        type="file"
+        accept="image/jpeg,image/png,image/webp,image/avif"
+    /></label>
+    <label
+      >Width <input id="width" type="number" min="1" max="16384" value="800"
+    /></label>
+    <label
+      >Format
+      <select id="format">
+        <option value="auto">auto</option>
+        <option value="webp">webp</option>
+        <option value="avif">avif</option>
+        <option value="jpeg">jpeg</option>
+        <option value="png">png</option>
+      </select></label
+    >
+    <button id="copy">Copy URL / curl</button>
+    <p id="message" role="status"></p>
+    <img id="preview" alt="Live transformed preview" />
+    <h2>Generated URL and curl</h2>
+    <pre id="output"></pre>
+    <script>
+      const byId = (id) => document.getElementById(id);
+      const shellQuote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
+      let previewUrl;
+      async function update() {
+        const base = byId("api").value.replace(/\/+$/, "");
+        const file = byId("file").files[0];
+        const width = Number(byId("width").value);
+        const format = byId("format").value;
+        const ops = [
+          { op: "resize", width },
+          { op: "format", format },
+        ];
+        const source = byId("source").value.trim();
+        let generated = "";
+        byId("message").textContent = "";
+        if (source) {
+          const tokens = `w_${width},f_${format}`;
+          generated = `${base}/v1/img/${tokens}/${encodeURIComponent(source)}`;
+          byId("preview").src = generated;
+        } else if (file) {
+          const form = new FormData();
+          form.append("file", file);
+          form.append("ops", JSON.stringify(ops));
+          try {
+            const response = await fetch(`${base}/v1/transform`, {
+              method: "POST",
+              body: form,
+            });
+            if (!response.ok)
+              throw new Error(`API returned ${response.status}`);
+            const blob = await response.blob();
+            if (previewUrl) URL.revokeObjectURL(previewUrl);
+            previewUrl = URL.createObjectURL(blob);
+            byId("preview").src = previewUrl;
+          } catch (error) {
+            byId("message").textContent =
+              `${error.message}. Check the API origin and CORS settings.`;
+          }
+          generated = `curl -X POST ${shellQuote(`${base}/v1/transform`)} -F ${shellQuote(`file=@${file.name}`)} -F ${shellQuote(`ops=${JSON.stringify(ops)}`)} --output transformed.${format === "auto" ? "webp" : format}`;
+        } else {
+          byId("preview").removeAttribute("src");
+        }
+        byId("output").textContent = generated;
+      }
+      ["api", "source", "file", "width", "format"].forEach((id) =>
+        byId(id).addEventListener("input", update),
+      );
+      byId("copy").addEventListener("click", async () => {
+        await navigator.clipboard.writeText(byId("output").textContent);
+        byId("message").textContent = "Copied to clipboard";
+      });
+      update();
+    </script>
+  </body>
+</html>

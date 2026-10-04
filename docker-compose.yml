@@ -8,20 +8,53 @@ services:
     environment:
       HOST: 0.0.0.0
       CACHE_DIR: /var/cache/image-craft
+      STORAGE_DRIVER: ${STORAGE_DRIVER:-disk}
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+      S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
+      S3_PRESIGNED_UPLOAD_TTL_SECONDS: ${S3_PRESIGNED_UPLOAD_TTL_SECONDS:-900}
+      NAMED_SOURCES: ${NAMED_SOURCES:-}
       QUEUE_ENABLED: ${QUEUE_ENABLED:-false}
       REDIS_URL: redis://redis:6379
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318}
       REMOVE_BACKGROUND_ENABLED: ${REMOVE_BACKGROUND_ENABLED:-false}
-      REMBG_URL: http://rembg:7000
+      REMBG_URL: http://rembg:8000
+      UPSCALE_ENABLED: ${UPSCALE_ENABLED:-false}
+      UPSCALE_URL: http://realesrgan-worker:8000
+      AUTO_ALT_TEXT_ENABLED: ${AUTO_ALT_TEXT_ENABLED:-false}
+      AUTO_ALT_TEXT_URL: http://vision-worker:8000
+      NSFW_CHECK_ENABLED: ${NSFW_CHECK_ENABLED:-false}
+      NSFW_CHECK_URL: http://nsfw-worker:8000
+      AI_PLUGIN_TIMEOUT_MS: ${AI_PLUGIN_TIMEOUT_MS:-20000}
+      PDF_ENABLED: ${PDF_ENABLED:-false}
+      PDF_RASTERIZER_URL: http://pdf-worker:8000
+      PDF_MAX_DPI: ${PDF_MAX_DPI:-200}
+      PDF_MAX_PAGES: ${PDF_MAX_PAGES:-50}
+      PDF_CPU_SECONDS: ${PDF_CPU_SECONDS:-5}
+      PDF_MEMORY_MB: ${PDF_MEMORY_MB:-512}
+      PDF_WORKER_TIMEOUT_MS: ${PDF_WORKER_TIMEOUT_MS:-10000}
+      PDF_MAX_PIXELS: ${PDF_MAX_PIXELS:-20000000}
     volumes:
       - image-cache:/var/cache/image-craft
     restart: unless-stopped
+    mem_limit: 2g
+    cpus: 2
+    depends_on:
+      redis:
+        condition: service_healthy
     read_only: true
     tmpfs:
       - /tmp:size=64m,noexec,nosuid
+    networks:
+      - default
+      - pdf-internal
 
   redis:
     image: redis:7-alpine
-    profiles: [queue]
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis-data:/data
@@ -33,14 +66,163 @@ services:
     restart: unless-stopped
 
   rembg:
+    build: ./workers/ai-http-worker
+    profiles: [ai, plugins]
+    environment:
+      AI_WORKER_MODE: remove-background
+      AI_BACKEND_URL: http://rembg-model:7000
+      AI_BACKEND_HEALTH_URL: http://rembg-model:7000/openapi.json
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-20971520}
+    depends_on:
+      rembg-model:
+        condition: service_started
+    restart: unless-stopped
+
+  rembg-model:
     image: danielgatis/rembg:2.0.85
-    profiles: [plugins]
+    profiles: [ai, plugins]
     command: ["s", "--host", "0.0.0.0", "--port", "7000", "--no-ui"]
     volumes:
       - rembg-models:/root/.rembg
+    restart: unless-stopped
+
+  realesrgan-worker:
+    build: ./workers/ai-http-worker
+    profiles: [ai]
+    environment:
+      AI_WORKER_MODE: upscale
+      AI_BACKEND_URL: ${REALESRGAN_BACKEND_URL:-}
+      AI_BACKEND_HEALTH_URL: ${REALESRGAN_HEALTH_URL:-}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-20971520}
+    restart: unless-stopped
+
+  vision-worker:
+    build: ./workers/ai-http-worker
+    profiles: [ai]
+    environment:
+      AI_WORKER_MODE: auto-alt-text
+      AI_BACKEND_URL: ${VISION_MODEL_URL:-}
+      AI_BACKEND_HEALTH_URL: ${VISION_MODEL_HEALTH_URL:-}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-20971520}
+    restart: unless-stopped
+
+  nsfw-worker:
+    build: ./workers/ai-http-worker
+    profiles: [ai]
+    environment:
+      AI_WORKER_MODE: nsfw-check
+      AI_BACKEND_URL: ${NSFW_MODEL_URL:-}
+      AI_BACKEND_HEALTH_URL: ${NSFW_MODEL_HEALTH_URL:-}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-20971520}
+    restart: unless-stopped
+
+  pdf-worker:
+    build: ./workers/pdf-rasterizer
+    profiles: [pdf]
+    environment:
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-20971520}
+      PDF_MAX_OUTPUT_BYTES: ${MAX_UPLOAD_BYTES:-20971520}
+      PDF_MAX_DPI: ${PDF_MAX_DPI:-200}
+      PDF_MAX_PAGES: ${PDF_MAX_PAGES:-50}
+      PDF_CPU_SECONDS: ${PDF_CPU_SECONDS:-5}
+      PDF_MEMORY_MB: ${PDF_MEMORY_MB:-512}
+      PDF_MAX_PIXELS: ${PDF_MAX_PIXELS:-20000000}
+      PDF_PROCESS_TIMEOUT_SECONDS: ${PDF_PROCESS_TIMEOUT_SECONDS:-8}
+    mem_limit: 768m
+    cpus: 1
+    pids_limit: 32
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - pdf-internal
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  minio:
+    image: ghcr.io/coollabsio/minio:RELEASE.2025-04-22T22-12-26Z
+    profiles: [s3-test]
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+
+  s3-integration:
+    build:
+      context: .
+      target: build
+    profiles: [s3-test]
+    command: ["npm", "test", "--", "test/integration/s3-storage.test.ts"]
+    environment:
+      S3_TEST_ENDPOINT: http://minio:9000
+      S3_TEST_REGION: us-east-1
+      S3_TEST_ACCESS_KEY: minioadmin
+      S3_TEST_SECRET_KEY: minioadmin
+    depends_on:
+      minio:
+        condition: service_started
+
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    profiles: [monitoring]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - image-craft-service
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    profiles: [monitoring]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-local-dev-only-change-me}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3001}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboard.json:/var/lib/grafana/dashboards/image-craft-service.json:ro
+    depends_on:
+      - prometheus
     restart: unless-stopped
 
 volumes:
   image-cache:
   redis-data:
   rembg-models:
+  prometheus-data:
+  grafana-data:
+  minio-data:
+
+networks:
+  pdf-internal:
+    internal: true

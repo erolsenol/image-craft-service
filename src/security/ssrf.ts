@@ -2,8 +2,10 @@ import { AppError } from "../core/errors.js";
 import { lookup } from "node:dns/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
+import type { RequestOptions } from "node:https";
 import type { IncomingHttpHeaders } from "node:http";
 import ipaddr from "ipaddr.js";
+import { isIP } from "node:net";
 
 export function isPublicIp(address: string): boolean {
   if (!ipaddr.isValid(address)) return false;
@@ -56,6 +58,7 @@ export interface RemoteFetchDependencies {
     address: string,
     timeoutMs: number,
     maxBytes: number,
+    headers?: Readonly<Record<string, string>>,
   ) => Promise<PinnedResponse>;
 }
 
@@ -70,6 +73,9 @@ export async function fetchRemoteImage(
     allowedHosts: readonly string[];
     timeoutMs: number;
     maxBytes: number;
+    headers?: Readonly<Record<string, string>>;
+    credentialOrigin?: string;
+    accept?: string;
   },
   dependencies: RemoteFetchDependencies = {},
 ): Promise<RemoteResponse> {
@@ -105,6 +111,10 @@ export async function fetchRemoteImage(
         addresses[0]!,
         remainingMs,
         options.maxBytes,
+        current.origin === options.credentialOrigin
+          ? options.headers
+          : undefined,
+        options.accept,
       );
     } catch (error) {
       if (error instanceof AppError) throw error;
@@ -145,29 +155,52 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   });
 }
 
+export function buildPinnedRequestOptions(
+  url: URL,
+  address: string,
+  timeoutMs: number,
+  additionalHeaders?: Readonly<Record<string, string>>,
+  accept = "image/*",
+): RequestOptions {
+  const options: RequestOptions = {
+    protocol: url.protocol,
+    hostname: address,
+    ...(url.port ? { port: Number(url.port) } : {}),
+    path: `${url.pathname}${url.search}`,
+    method: "GET",
+    timeout: timeoutMs,
+    headers: {
+      accept,
+      "user-agent": "image-craft-service/1.1.0",
+      ...additionalHeaders,
+      host: url.host,
+    },
+  };
+  const tlsHostname = url.hostname.replace(/^\[|\]$/g, "");
+  if (url.protocol === "https:" && isIP(tlsHostname) === 0) {
+    options.servername = tlsHostname;
+  }
+  return options;
+}
+
 function requestPinned(
   url: URL,
   address: string,
   timeoutMs: number,
   maxBytes: number,
+  additionalHeaders?: Readonly<Record<string, string>>,
+  accept?: string,
 ): Promise<PinnedResponse> {
   return new Promise((resolve, reject) => {
     const requestFn = url.protocol === "https:" ? httpsRequest : httpRequest;
     const request = requestFn(
-      url,
-      {
-        timeout: timeoutMs,
-        lookup: (_hostname, _options, callback) =>
-          callback(
-            null,
-            address,
-            ipaddr.parse(address).kind() === "ipv4" ? 4 : 6,
-          ),
-        headers: {
-          accept: "image/*",
-          "user-agent": "image-craft-service/0.1.0",
-        },
-      },
+      buildPinnedRequestOptions(
+        url,
+        address,
+        timeoutMs,
+        additionalHeaders,
+        accept,
+      ),
       (response) => {
         if (
           response.statusCode &&
@@ -216,4 +249,14 @@ function requestPinned(
     request.on("error", reject);
     request.end();
   });
+}
+
+export function createPinnedLookup(
+  address: string,
+): NonNullable<RequestOptions["lookup"]> {
+  const family = ipaddr.parse(address).kind() === "ipv4" ? 4 : 6;
+  return (_hostname, options, callback) => {
+    if (options.all) callback(null, [{ address, family }]);
+    else callback(null, address, family);
+  };
 }

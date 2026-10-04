@@ -12,6 +12,7 @@ const allowedMimeTypes = new Set([
 export async function validateImage(
   buffer: Buffer,
   maxPixels: number,
+  maxFrames = 100,
 ): Promise<string> {
   const mime = sniffImageMime(buffer);
   if (!mime || !allowedMimeTypes.has(mime))
@@ -21,6 +22,7 @@ export async function validateImage(
     metadata = await sharp(buffer, {
       limitInputPixels: maxPixels,
       failOn: "error",
+      animated: true,
     }).metadata();
   } catch (error) {
     if (
@@ -30,13 +32,38 @@ export async function validateImage(
       throw new AppError("Image exceeds pixel limit", 413);
     throw new AppError("Invalid image data", 415);
   }
-  if (
-    !metadata.width ||
-    !metadata.height ||
-    metadata.width * metadata.height > maxPixels
-  )
+  assertDecodedPixelBudget(
+    metadata.width ?? 0,
+    metadata.pageHeight ??
+      (metadata.pages && metadata.pages > 1
+        ? Math.floor((metadata.height ?? 0) / metadata.pages)
+        : (metadata.height ?? 0)),
+    metadata.pages ?? 1,
+    maxPixels,
+  );
+  if ((metadata.pages ?? 1) > maxFrames)
+    throw new AppError("Image exceeds animation frame limit", 413);
+  if (!metadata.width || !metadata.height)
     throw new AppError("Image exceeds pixel limit", 413);
   return mime;
+}
+
+export function assertDecodedPixelBudget(
+  width: number,
+  pageHeight: number,
+  pages: number,
+  maxPixels: number,
+): void {
+  if (
+    !Number.isSafeInteger(width) ||
+    !Number.isSafeInteger(pageHeight) ||
+    !Number.isSafeInteger(pages) ||
+    width < 1 ||
+    pageHeight < 1 ||
+    pages < 1 ||
+    width * pageHeight * pages > maxPixels
+  )
+    throw new AppError("Image exceeds pixel limit", 413);
 }
 
 export function assertOutputDimensions(

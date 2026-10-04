@@ -1,53 +1,33 @@
 # image-craft-service
 
-[![CI](https://github.com/erolsenol/image-craft-service/actions/workflows/ci.yml/badge.svg)](https://github.com/erolsenol/image-craft-service/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Node.js 20+](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org/)
+[![CI](https://github.com/erolsenol/image-craft-service/actions/workflows/ci.yml/badge.svg)](https://github.com/erolsenol/image-craft-service/actions/workflows/ci.yml) [![npm](https://img.shields.io/npm/v/image-craft-service)](https://www.npmjs.com/package/image-craft-service) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Node.js 20+](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org/)
 
-A self-hosted HTTP API for resizing, converting, and optimizing images with Sharp.
+**A self-hosted image processing API for teams that want image transforms on their own infrastructure.** Built with Node.js, Fastify, and Sharp.
 
-## Quick start
+## Features
 
-```sh
-docker build -t image-craft-service:0.1.4 .
-docker run --rm -p 3000:3000 image-craft-service:0.1.4
+- Resize, smart and focal-point crop, padding, rotate, flip/flop, tint, color adjustments, watermarks, rounded corners, blur, sharpen, grayscale, and convert to JPEG, PNG, WebP, or AVIF.
+- Accept-based auto format selection (AVIF, then WebP, then source format) and BlurHash previews.
+- Smart lossy quality selection with a configurable SSIM threshold, plus `/v1/analyze` format and byte-savings estimates.
+- Transform uploaded images or public remote URLs; strip metadata from output.
+- Disk cache with TTL, size-bounded LRU eviction, request coalescing, and `X-Cache` / ETag headers; optional S3-compatible storage for cache, uploads, and batch outputs.
+- Optional Redis-backed batch jobs with streamed ZIP downloads, per-item errors, retries, and per-client limits.
+- SSRF defenses, signed URLs, input and output limits, and bounded processing concurrency.
+- SHA-256 API key digests with optional route scopes, per-key request limits, exact-origin CORS, and browser security headers.
+- SVG uploads are rejected; image watermarks accept PNG only and responses are rasterized.
+- Optional rembg background removal plugin.
+- Prometheus metrics for HTTP traffic, operation latency, cache, queue, in-flight transforms, and errors; optional OpenTelemetry traces.
+- Provisioned Grafana dashboard and a Compose `monitoring` profile.
+- Named, allowlisted source aliases with per-source credentials and S3-presigned upload URLs.
+- Tenant API keys with daily request/byte quotas, source and operation allowlists, tenant presets, isolated cache/batch storage keys, and per-tenant Prometheus counters.
+
+## Before and after
+
+Turn a large JPEG into a smaller WebP with one request:
+
+```text
+photo.jpg (2400 × 1600, JPEG)  ── resize 400 × 300 + WebP ──▶  photo.webp
 ```
-
-The service listens at `http://localhost:3000`; interactive API docs are at `/docs`. Remote URL transforms report `X-Cache: HIT` or `X-Cache: MISS`; disk entries expire according to `CACHE_MAX_AGE_SECONDS` and are evicted least-recently-used when the size limit is reached.
-For local development, copy `.env.example` to `.env`, then run `npm ci && npm run dev`. To run the published npm package, use `npx image-craft-service@0.1.4` (Node.js 20+).
-
-### Batch jobs (optional)
-
-Set `QUEUE_ENABLED=true` and `REDIS_URL=redis://redis:6379` in `.env`, then start the API with Redis:
-
-```sh
-docker compose --profile queue up --build
-```
-
-Submit up to `BATCH_MAX_ITEMS` source URLs with one shared operation chain. Poll the returned `statusUrl`; it returns JSON while queued or processing, then the downloadable ZIP when complete.
-
-```sh
-curl -X POST http://localhost:3000/v1/batch \
-  -H 'content-type: application/json' \
-  -d '{"sources":["https://example.com/a.jpg","https://example.com/b.png"],"ops":[{"op":"resize","width":800},{"op":"format","format":"webp","quality":82}]}'
-
-# Poll the returned URL; when complete, save its ZIP response.
-curl -L http://localhost:3000/v1/jobs/JOB_ID -o images.zip
-```
-
-Remote batch sources use the same SSRF protections, host allowlist, request timeout, upload-size cap, pixel limit, and output-dimension limit as URL transforms. Redis stores job state; ZIP results use `BATCH_RESULT_TTL_SECONDS`.
-
-### Optional plugins
-
-The `remove-background` plugin uses a separate rembg container and is disabled by default. Set `REMOVE_BACKGROUND_ENABLED=true` in `.env`, then start the service with:
-
-```sh
-docker compose --profile plugins up --build
-```
-
-Use it in a multipart transform or batch operation chain with `{"op":"plugin","name":"remove-background","options":{}}`. The worker image and its model are downloaded separately; the model is retained in a Docker volume. See [src/plugins/README.md](src/plugins/README.md) to add plugins.
-
-## API
-
-Upload and transform an image with a JSON operation array in the multipart `ops` field:
 
 ```sh
 curl -X POST http://localhost:3000/v1/transform \
@@ -56,74 +36,398 @@ curl -X POST http://localhost:3000/v1/transform \
   --output photo.webp
 ```
 
-Fetch and transform a remote image (only public hosts are allowed):
+## Quick start
+
+Start the published v1.2.0 image (multi-architecture `amd64` and `arm64`):
+
+```sh
+docker run --rm -p 3000:3000 ghcr.io/erolsenol/image-craft-service:1.2.0
+```
+
+Open [localhost:3000/docs](http://localhost:3000/docs) for interactive API docs. For local development with Node.js 20+, use `npm ci && npm run dev`.
+
+Transform a public image by URL:
 
 ```sh
 curl -L 'http://localhost:3000/v1/img/w_400,h_300,fit_cover,f_webp/https://example.com/photo.jpg' \
   --output photo.webp
 ```
 
-Inspect dimensions, format, and available EXIF fields (GPS fields are omitted):
+For TypeScript, install `image-craft-client`:
 
 ```sh
-curl -X POST http://localhost:3000/v1/metadata -F 'file=@photo.jpg'
+npm install image-craft-client
 ```
 
-Remote URL operations support `w`, `h`, `fit`, `l` (left), `t` (top), `cw`/`ch` (crop width/height), `rot`, `blur`, `sharp`, `gray_1`, `wm` (URL-encoded text), `grav`, `f`, and `q` tokens. Operations are grouped in the order their operation type first appears.
+```ts
+import { createCraftClient } from "image-craft-client";
 
-Operations are applied in order: `resize` (`width`, `height`, `fit`), `crop` (`left`, `top`, `width`, `height`), `rotate` (`angle`), `blur` (`sigma`), `sharpen` (`sigma`), `grayscale`, `watermark` (`text`, optional `gravity`), and `format` (`format`, optional `quality`). Metadata is stripped from transformed images.
+const craft = createCraftClient({ baseUrl: "http://localhost:3000" });
+const url = craft
+  .image("https://example.com/photo.jpg")
+  .resize(800)
+  .format("webp")
+  .url();
+const signedUrl = await craft
+  .image("https://example.com/photo.jpg")
+  .resize(800)
+  .format("webp")
+  .signedUrl(process.env.SIGNING_SECRET!, { expiresInSeconds: 3600 });
+```
+
+The Python package is `pip install image-craft-client` and provides the same builder and signed URL flow. The CLI accepts `image-craft transform photo.jpg --resize 800 --format webp`. React users can import `<CraftImage />` from `image-craft-client/react` to create width-based responsive URLs. See [`examples/`](examples/) for Next.js, Express, plain HTML, and the interactive [playground](examples/playground/README.md).
+
+Remote images must resolve to public IP addresses. See [Security](#security) before exposing the API to untrusted clients. Set `CACHE_ENABLED=false` to disable cache reads and writes. Multipart uploads are cached only when an `X-Cache-Key` header is provided; the service also keys by file content, operations, and resolved format.
+
+Remote transform cache keys combine the normalized source URL, canonical operation chain, and output format. Concurrent identical misses share one fetch and transform. Responses include `X-Cache: HIT|MISS`, a content-based `ETag`, and `Cache-Control`.
+
+Multipart transforms opt into caching with a client-provided key; matching image bytes, operations, format, and key reuse the result:
+
+```sh
+curl -H 'X-Cache-Key: product-card-42' \
+  -F 'file=@photo.jpg' \
+  -F 'ops=[{"op":"resize","width":400},{"op":"format","format":"webp"}]' \
+  http://localhost:3000/v1/transform --output photo.webp
+```
+
+Send the ETag from the first response in `If-None-Match` to get `304 Not Modified` when the cached image is unchanged:
+
+```sh
+curl -i -H 'If-None-Match: "<etag-from-first-response>"' \
+  'http://localhost:3000/v1/img/w_400,f_webp/https://example.com/photo.jpg'
+```
+
+### Smart quality and analysis
+
+Set `quality` to `"smart"` on a JPEG, WebP, or AVIF format operation. The service searches for a low quality that meets `SMART_QUALITY_SSIM_THRESHOLD` (default `0.98`) using at most five lossy encodes, then caches that quality for the same source content, format, threshold, and preceding operations.
+
+```sh
+curl -X POST http://localhost:3000/v1/analyze \
+  -H 'Content-Type: application/json' \
+  -d '{"source":"https://example.com/photo.jpg"}'
+
+curl 'http://localhost:3000/v1/img/w_800,f_webp,q_smart/https://example.com/photo.jpg' \
+  --output photo.webp
+```
+
+`/v1/analyze` compares AVIF and WebP and returns the best estimated format, quality, SSIM score, and expected byte savings against the downloaded source. Each format uses at most five candidate encodes (ten total), so analysis uses more CPU and can increase response latency compared with a fixed quality. SSIM is measured on a downscaled luminance image; it is an estimate, not a guarantee of perceived quality. Run `npm run benchmark:smart-quality -- photo.jpg` to measure on your own hardware and fixtures.
+
+### Sign transform URLs
+
+Set `SIGNING_SECRET` on the service and in the environment where you create a signature. `PUBLIC_BASE_URL` controls the service origin printed by the CLI; it defaults to `http://localhost:$PORT`. Signatures use the format `/v1/img/<signature>/<ops>/<source>?expires=<unix>`. `SIGNING_REQUIRED=true` rejects unsigned transforms. During rotation, set `SIGNING_SECRET_PREVIOUS` to accept links signed with the old secret.
+
+```sh
+export SIGNING_SECRET='replace-with-a-long-random-secret'
+export PUBLIC_BASE_URL='https://images.example.com'
+npm run sign -- --ops w_400,f_webp --src https://example.com/photo.jpg --ttl 3600
+```
+
+The Node SDK creates the same signed URL:
+
+```ts
+import { createCraftClient } from "image-craft-client";
+
+const url = await createCraftClient({ baseUrl: process.env.PUBLIC_BASE_URL! })
+  .image("https://example.com/photo.jpg")
+  .resize(400)
+  .format("webp")
+  .signedUrl(process.env.SIGNING_SECRET!, { expiresInSeconds: 3600 });
+```
+
+Fetch a CLI-generated URL with curl:
+
+```sh
+SIGNED_URL="$(npm run sign -- --ops w_400,f_webp --src https://example.com/photo.jpg --ttl 3600)"
+curl -D - "$SIGNED_URL" --output photo.webp
+```
+
+Altered operations, source URLs, invalid signatures, and expired signatures all receive the same `403` response and `SIGNATURE_INVALID` code.
+
+## Benchmarks
+
+We profile the engine and publish reproducible k6 comparisons. Results and all raw summary files are in [docs/benchmarks.md](docs/benchmarks.md). In the recorded two-CPU HTTP run, image-craft-service was slower than imgproxy and Thumbor for resize, WebP, and AVIF; the local engine profile does not represent remote-fetch endpoint throughput.
+
+## How it compares
+
+These projects overlap, but have different runtimes and feature sets. This table describes their published focus; it is not a performance or feature-parity claim.
+
+| Project                                       | Runtime and interface                                      | Published focus                                                                 |
+| --------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| **image-craft-service**                       | Node.js / TypeScript; multipart uploads and URL transforms | A small self-hosted API with optional Redis batch jobs, disk cache, and plugins |
+| [imgproxy](https://docs.imgproxy.net/)        | Standalone server; URL-based transforms                    | Broad image processing and optimization, including advanced formats and options |
+| [Thumbor](https://github.com/thumbor/thumbor) | Python; URL-based transforms and extensions                | Extensible image service with smart cropping and feature detection              |
+
+Choose based on your runtime, deployment model, and required transforms. This project is an early release and does not aim for feature parity with either established service.
+
+## API at a glance
+
+| Endpoint                    | Purpose                                                      |
+| --------------------------- | ------------------------------------------------------------ |
+| `POST /v1/transform`        | Upload and transform an image                                |
+| `GET /v1/img/:ops/*src`     | Fetch and transform a public remote image                    |
+| `GET /v1/pdf/*src`          | Rasterize one remote PDF page as PNG                         |
+| `GET /v1/hash/*src`         | Generate a BlurHash preview for a remote image               |
+| `POST /v1/metadata`         | Read dimensions, format, and EXIF without GPS fields         |
+| `POST /v1/uploads`          | Store an image for a later batch job (returns file ID)       |
+| `POST /v1/batch`            | Submit URL or uploaded-file transforms when Redis is enabled |
+| `GET /v1/jobs/:id`          | Poll job status, progress, and per-item errors               |
+| `GET /v1/jobs/:id/download` | Stream the completed ZIP archive                             |
+| `GET /health`, `GET /ready` | Liveness and readiness checks                                |
+| `GET /docs`                 | OpenAPI documentation and Swagger UI                         |
+
+The checked-in [OpenAPI document](openapi/openapi.json) is the source for generated TypeScript types and the Python route contract. Run `npm run sdk:generate` after an API schema change; CI checks that the generated files match the live Fastify specification.
+
+The `/v1` API is stable from v1.0.0; see the [compatibility and deprecation policy](docs/api-stability.md) and [upgrade guide](docs/upgrade-v1.md). SDK publishing uses GitHub OIDC; see [SDK publishing](docs/sdk-publishing.md). Container signatures and SBOMs are attached to GitHub releases; see [licensing notes](docs/licensing.md).
+
+For the remote transform endpoint, OpenAPI documents `expires`, `If-None-Match`, and the `X-Cache`, `ETag`, and `Cache-Control` response headers.
+
+Invalid operation requests return a JSON `error` and machine-readable `code`, such as `INVALID_OPERATIONS` or `OPS_CHAIN_TOO_LONG`.
+
+PDF conversion is opt-in. Start the isolated Poppler worker and enable it in the API:
+
+```sh
+PDF_ENABLED=true docker compose --profile pdf up --build
+curl 'http://localhost:3000/v1/pdf/https%3A%2F%2Fexample.com%2Freport.pdf?page=2&dpi=150' --output page-2.png
+```
+
+The page parameter is one-based and defaults to `1`; DPI defaults to `150` and cannot exceed `PDF_MAX_DPI` (default `200`, hard maximum `300`). The worker rejects PDFs above the configured page, input byte, rendered pixel, or output byte limits. Poppler runs as an unprivileged process with CPU and address-space limits inside a read-only, network-isolated container with CPU, memory, PID, and temporary-disk caps. Rasterization costs CPU and memory in proportion to page dimensions and DPI; larger DPI increases pixel work approximately quadratically. Malformed PDFs or invalid page/DPI parameters return `400`, resource-limit violations return `413`, and an unavailable worker returns `503`.
+
+For URL transforms, operation tokens include `w`, `h`, `fit`, `rot`, `blur`, `sharp`, `gray_1`, `wm`, `f`, and `q`. Multipart requests accept a JSON `ops` array. See the examples above and [Swagger UI](http://localhost:3000/docs) for request schemas.
+
+### Batch jobs
+
+Run Redis and the API with Docker Compose (copy `.env.example` to `.env` first, then set `QUEUE_ENABLED=true`):
+
+```sh
+cp .env.example .env
+# Set QUEUE_ENABLED=true in .env
+docker compose up --build
+```
+
+Submit source URLs directly, or upload images first and use their expiring IDs:
+
+```sh
+curl -X POST http://localhost:3000/v1/uploads \\
+  -F 'file=@photo.jpg' -H 'X-API-Key: your-configured-key'
+
+curl -X POST http://localhost:3000/v1/batch \\
+  -H 'Content-Type: application/json' -H 'X-API-Key: your-configured-key' \\
+  -d '{"sources":["https://example.com/a.jpg","file_<returned-id>"],"ops":[{"op":"resize","width":400}]}'
+
+curl -H 'X-API-Key: your-configured-key' http://localhost:3000/v1/jobs/<job-id>
+curl -L -H 'X-API-Key: your-configured-key' http://localhost:3000/v1/jobs/<job-id>/download -o results.zip
+```
+
+The default maximum is 100 sources per job. The worker processes items sequentially and persists each transformed result through the configured storage adapter; ZIP downloads stream those files to the response, so image and archive contents are not accumulated in memory. Set `API_KEYS` to comma-separated client keys to enable key authentication and per-key quotas. Configure `BATCH_CONCURRENCY_PER_API_KEY`, `BATCH_RATE_LIMIT_PER_API_KEY`, and `BATCH_RATE_WINDOW_MS` for admission limits. Job data and result files expire according to `BATCH_RESULT_TTL_SECONDS`.
+
+### S3-compatible storage and presigned uploads
+
+Set `STORAGE_DRIVER=s3` and configure an AWS S3, Cloudflare R2, or MinIO bucket. This single setting switches the cache, uploaded batch inputs, and batch outputs from disk to the configured object store. AWS deployments can use the SDK credential chain (for example, an IAM role); use `S3_ENDPOINT`, bucket credentials, and `S3_FORCE_PATH_STYLE=true` for R2 or MinIO. For R2, use its account endpoint and `S3_REGION=auto`.
+
+```env
+STORAGE_DRIVER=s3
+S3_ENDPOINT=http://minio:9000
+S3_REGION=us-east-1
+S3_BUCKET=image-craft
+S3_ACCESS_KEY_ID=minioadmin
+S3_SECRET_ACCESS_KEY=replace-with-secret
+S3_FORCE_PATH_STYLE=true
+```
+
+The disk multipart upload route stays available. With S3 selected and `QUEUE_ENABLED=true`, `POST /v1/uploads` also accepts JSON and returns a presigned `PUT` URL. Put the file with the returned headers, then pass the returned `fileId` to `/v1/batch`:
+
+```sh
+upload=$(curl -sS -X POST http://localhost:3000/v1/uploads \
+  -H 'Content-Type: application/json' -H 'X-API-Key: your-key' \
+  -d '{"contentType":"image/png","sizeBytes":12345}')
+upload_url=$(printf '%s' "$upload" | jq -r .uploadUrl)
+expires_at=$(printf '%s' "$upload" | jq -r '.headers["x-amz-meta-expiresat"]')
+file_id=$(printf '%s' "$upload" | jq -r .fileId)
+curl -X PUT "$upload_url" -H 'Content-Type: image/png' \
+  -H "x-amz-meta-expiresat: $expires_at" --upload-file photo.png
+curl -X POST http://localhost:3000/v1/batch \
+  -H 'Content-Type: application/json' -H 'X-API-Key: your-key' \
+  -d "{\"sources\":[\"$file_id\"],\"ops\":[{\"op\":\"resize\",\"width\":400}]}"
+```
+
+The client must be permitted by the bucket's CORS policy when uploading from a browser. S3 TTL expiry is enforced when an object is read. Add bucket lifecycle rules with retention at least as long as your maximum cache and job TTL to remove expired objects according to the provider's lifecycle schedule. The disk adapter enforces `CACHE_MAX_SIZE_BYTES`; S3 capacity is managed by the bucket and lifecycle policy.
+
+Remote source aliases are configured as JSON in `NAMED_SOURCES`. Each alias requires an HTTP(S) `origin` and an `allowedHosts` list that includes the origin hostname. Optional `headers` can contain only `authorization`, `x-api-key`, or `x-access-token`; values are sent only to the configured origin and never forwarded to a different redirect origin.
+
+```env
+NAMED_SOURCES={"cdn":{"origin":"https://cdn.example.com/assets/","allowedHosts":["cdn.example.com"],"headers":{"authorization":"Bearer source-token"}}}
+```
+
+Use the alias in a transform URL: `/v1/img/w_400,f_webp/cdn:products/photo.jpg`. Alias paths cannot traverse above the configured origin path and still pass through the service's public-IP and redirect checks.
+
+Run the MinIO-backed adapter tests locally with Docker Compose:
+
+```sh
+docker compose --profile s3-test run --rm s3-integration
+```
+
+Set `WEBHOOK_SIGNING_SECRET` (at least 32 characters) and pass `webhookUrl` when submitting a job to receive a completion callback. The service signs `timestamp + "." + raw JSON body` with HMAC-SHA256 in `X-Image-Craft-Timestamp` and `X-Image-Craft-Signature` headers. Callback hosts must resolve to public IPs; redirects are rejected.
+
+Use `f_auto` to negotiate AVIF, WebP, or the original image format from the request's `Accept` header. The response includes `Vary: Accept`.
+
+Animated GIF and WebP inputs keep their frames during resize; GIF can be converted to animated WebP with `f_webp`. AVIF sequences can be read and resized to WebP, but Sharp/libvips cannot encode animated AVIF output. Select one still frame with `?frame=2` (zero-based). Animation decoding is bounded by `MAX_ANIMATION_FRAMES` (maximum 100 frames) and the cumulative `MAX_INPUT_PIXELS` budget across all frames. Each request must also fit `MAX_UPLOAD_BYTES` (including remote downloads). Large animations use memory for the decoded frame stack and CPU in proportion to the frames processed, so the frame and pixel caps apply even when only one frame is requested.
+
+```sh
+curl 'http://localhost:3000/v1/img/w_600,f_webp/https://example.com/animated.gif' --output animation.webp
+curl 'http://localhost:3000/v1/img/w_600,f_webp/https://example.com/animated.gif?frame=2' --output frame.webp
+```
+
+```sh
+curl -H 'Accept: image/avif,image/webp,image/*' \
+  'http://localhost:3000/v1/img/w_400,h_300,fit_cover,f_auto/https://example.com/photo.jpg' \
+  --output photo.avif
+```
+
+Additional URL tokens include `strategy_attention` or `strategy_entropy`, `fx_0.5,fy_0.4`, `padtop_16,padleft_16,bg_%23ffffff`, `flip_1`, `flop_1`, `tint_%23ffcc00`, `bright_1.1`, `contrast_0.1`, `sat_1.2`, and `radius_24`. Image watermarks use a base64url encoded PNG with `wmimg_<data>,wmop_0.5,pos_southeast`. Unknown operation names are rejected; operation chains are capped by `MAX_OPS_CHAIN`.
+
+Get a compact BlurHash preview for a remote image:
+
+```sh
+curl 'http://localhost:3000/v1/hash/https://example.com/photo.jpg'
+```
+
+### Optional AI plugins
+
+Four versioned plugins are available: remove background, Real-ESRGAN upscaling, vision-generated alt text, and NSFW scoring. They are disabled by default and run through separate HTTP worker containers. The API image does not include model runtimes. Enable only the plugin you need and configure its private worker/backend URL. Worker outages return `503` for that operation; the API continues serving other requests.
+
+```sh
+docker compose --profile ai up --build
+```
+
+Analysis responses include percent-encoded `X-Image-Alt-Text` or `X-NSFW-Score`. NSFW operations can set `{"threshold":0.85,"blockAbove":true}` to reject higher scores with `422`. See [How to write a plugin](docs/plugins.md) for the worker contracts, configuration, and a working TypeScript example.
 
 ## Configuration
 
-| Variable                       | Default                  | Description                                                                                               |
-| ------------------------------ | ------------------------ | --------------------------------------------------------------------------------------------------------- |
-| `HOST`                         | `0.0.0.0`                | Bind address                                                                                              |
-| `PORT`                         | `3000`                   | HTTP port                                                                                                 |
-| `MAX_UPLOAD_BYTES`             | `20971520`               | Maximum uploaded or fetched input size                                                                    |
-| `MAX_INPUT_PIXELS`             | `40000000`               | Maximum decoded image pixels                                                                              |
-| `MAX_OUTPUT_DIMENSION`         | `4096`                   | Maximum output width or height                                                                            |
-| `REQUEST_TIMEOUT_MS`           | `30000`                  | Remote request and server request timeout                                                                 |
-| `CONCURRENCY_LIMIT`            | `8`                      | Maximum simultaneous requests (hard cap: 16; combined upload buffers capped at 256 MiB)                   |
-| `IMAGE_PROCESSING_CONCURRENCY` | `2`                      | Concurrent Sharp/plugin operations (hard cap: 4; pixel budget is capped at 80 million combined)           |
-| `ALLOWED_HOSTS`                | empty                    | Optional comma-separated remote host allowlist                                                            |
-| `SIGNING_SECRET`               | unset                    | Optional secret requiring HMAC-signed remote URLs                                                         |
-| `CACHE_DIR`                    | `/tmp/image-craft-cache` | Local disk cache directory                                                                                |
-| `CACHE_MAX_SIZE_BYTES`         | `536870912`              | Maximum disk cache size (512 MiB); least-recently-used entries are evicted first                          |
-| `CACHE_MAX_AGE_SECONDS`        | `86400`                  | Disk entry TTL and browser/proxy cache lifetime                                                           |
-| `QUEUE_ENABLED`                | `false`                  | Enable BullMQ batch jobs backed by Redis                                                                  |
-| `REDIS_URL`                    | `redis://127.0.0.1:6379` | Redis connection URL                                                                                      |
-| `BATCH_MAX_ITEMS`              | `20`                     | Maximum source URLs accepted by one batch                                                                 |
-| `BATCH_CONCURRENCY`            | `1`                      | Maximum batch jobs processed at the same time                                                             |
-| `BATCH_MAX_RESULT_BYTES`       | `134217728`              | Maximum total transformed bytes in one ZIP result; combined batch result and ZIP memory capped at 256 MiB |
-| `BATCH_RESULT_TTL_SECONDS`     | `86400`                  | How long completed ZIP results and job records are retained                                               |
-| `REMOVE_BACKGROUND_ENABLED`    | `false`                  | Enable the optional rembg background removal plugin                                                       |
-| `REMBG_URL`                    | `http://rembg:7000`      | Private rembg HTTP worker URL                                                                             |
-| `NODE_ENV`                     | `production`             | Runtime environment                                                                                       |
+All settings are environment variables validated at startup. See [.env.example](.env.example) for the full list.
 
-When `SIGNING_SECRET` is set, add `?sig=<hex HMAC-SHA256>` to a URL transform request. The signature is calculated over `<ops>/<source-url>`.
+### Tenants and presets
+
+Associate a hashed API key with a tenant using `tenant:<id>` in its scope list. Configure that tenant’s daily quotas, permitted remote hostnames/source aliases, operations, and presets through `TENANTS` JSON. Empty source and operation allowlists deny requests; use `"*"` to allow all sources or operations:
+
+```sh
+API_KEYS='<sha256-digest>=tenant:acme+transform+admin'
+TENANTS='{"acme":{"requestsPerDay":10000,"bytesPerDay":500000000,"allowedSources":["cdn","images.example.com"],"allowedOps":["resize","format"],"presets":{"thumb":[{"op":"resize","width":320},{"op":"format","format":"webp"}]}}}'
+```
+
+Clients can invoke the configured preset as `/v1/img/p:thumb/<source>`. `GET /v1/admin/tenants` and `GET /v1/admin/tenants/:tenantId` require an API key with the `admin` scope and show policy plus current-day usage. Daily counters are process-local and reset when the service restarts; use a single service instance when enforcing hard daily limits across requests. Tenant cache, quality, upload, and batch-result storage keys are namespaced.
+
+| Variable                                                           | Default                            | Purpose                                                                                  |
+| ------------------------------------------------------------------ | ---------------------------------- | ---------------------------------------------------------------------------------------- |
+| `MAX_UPLOAD_BYTES`                                                 | `20971520`                         | Maximum input size in bytes                                                              |
+| `MAX_INPUT_PIXELS`                                                 | `40000000`                         | Decompression-bomb pixel limit                                                           |
+| `MAX_ANIMATION_FRAMES`                                             | `100`                              | Maximum frames (hard cap 100); all frame pixels count toward `MAX_INPUT_PIXELS`          |
+| `SMART_QUALITY_SSIM_THRESHOLD`                                     | `0.98`                             | Minimum SSIM target for smart lossy quality; accepted range 0.8–0.999                    |
+| `PDF_ENABLED`                                                      | `false`                            | Enable the remote PDF page endpoint                                                      |
+| `PDF_RASTERIZER_URL`                                               | `http://pdf-worker:8000`           | Internal PDF worker HTTP address                                                         |
+| `PDF_MAX_DPI` / `PDF_MAX_PAGES`                                    | `200` / `50`                       | Worker-enforced per-page DPI and document page limits                                    |
+| `PDF_CPU_SECONDS` / `PDF_MEMORY_MB`                                | `5` / `512`                        | Per-rasterizer-process CPU and address-space limits                                      |
+| `PDF_MAX_PIXELS`                                                   | `20000000`                         | Maximum pixels in a rendered page                                                        |
+| `PDF_WORKER_TIMEOUT_MS`                                            | `10000`                            | HTTP timeout for the sandboxed PDF worker                                                |
+| `MAX_OUTPUT_DIMENSION`                                             | `4096`                             | Maximum output width or height                                                           |
+| `CONCURRENCY_LIMIT`                                                | `8`                                | Maximum simultaneous requests                                                            |
+| `REMOTE_TRANSFORM_RATE_LIMIT`                                      | `60`                               | Remote transforms allowed per IP per window                                              |
+| `REMOTE_TRANSFORM_RATE_WINDOW_MS`                                  | `60000`                            | Remote transform rate-limit window in milliseconds                                       |
+| `IMAGE_PROCESSING_CONCURRENCY`                                     | `2`                                | Concurrent image and plugin operations                                                   |
+| `SHARP_CONCURRENCY`                                                | `2`                                | libvips worker threads per image                                                         |
+| `SHARP_CACHE_MEMORY_MB`                                            | `32`                               | Per-process libvips operation cache memory budget                                        |
+| `MAX_OPS_CHAIN`                                                    | `20`                               | Maximum operations accepted in one transform chain                                       |
+| `ALLOWED_HOSTS`                                                    | unset                              | Optional comma-separated remote host allowlist                                           |
+| `SIGNING_SECRET`                                                   | unset                              | Active HMAC secret for signed remote transform URLs                                      |
+| `SIGNING_SECRET_PREVIOUS`                                          | unset                              | Previous HMAC secret accepted during rotation                                            |
+| `SIGNING_REQUIRED`                                                 | `false`                            | Reject unsigned remote transform URLs                                                    |
+| `PUBLIC_BASE_URL`                                                  | `http://localhost:$PORT`           | Public service origin used by the signed URL CLI                                         |
+| `CACHE_ENABLED`                                                    | `true`                             | Enable cache reads and writes                                                            |
+| `CACHE_DISTRIBUTED_LOCK_ENABLED`                                   | `false`                            | Use shared Redis locks to coalesce cache misses across API replicas                      |
+| `CACHE_DISTRIBUTED_LOCK_TTL_MS` / `CACHE_DISTRIBUTED_LOCK_WAIT_MS` | `10000` / `15000`                  | Lock lease and maximum wait for another replica to populate the shared cache             |
+| `CACHE_DIR`                                                        | `/tmp/image-craft-cache`           | Disk cache directory                                                                     |
+| `CACHE_MAX_AGE_SECONDS`                                            | `86400`                            | Cache TTL and response `Cache-Control` max-age                                           |
+| `CACHE_MAX_SIZE_BYTES`                                             | `536870912`                        | Maximum disk cache size                                                                  |
+| `STORAGE_DRIVER`                                                   | `disk`                             | `disk` or S3-compatible `s3` for cache and batch object storage                          |
+| `S3_ENDPOINT` / `S3_REGION`                                        | unset / `us-east-1`                | S3 API endpoint and signing region (`auto` for Cloudflare R2)                            |
+| `S3_BUCKET`                                                        | unset                              | Bucket used when `STORAGE_DRIVER=s3`                                                     |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY`                        | unset                              | Optional static credentials; AWS may use its role credential chain                       |
+| `S3_FORCE_PATH_STYLE`                                              | `true`                             | Use path-style addressing for R2 and MinIO                                               |
+| `S3_PRESIGNED_UPLOAD_TTL_SECONDS`                                  | `900`                              | Lifetime of returned upload URLs, maximum one hour                                       |
+| `NAMED_SOURCES`                                                    | empty                              | JSON map of source aliases, origin allowlists, and credentials                           |
+| `QUEUE_ENABLED` / `REDIS_URL`                                      | `false` / `redis://127.0.0.1:6379` | Enable Redis-backed batch jobs                                                           |
+| `API_KEYS`                                                         | unset                              | Semicolon-separated SHA-256 digests with scopes; add `tenant:<id>` and `admin` as needed |
+| `TENANTS`                                                          | `{}`                               | JSON tenant policy map with daily quotas, source/operation allowlists, and named presets |
+| `API_RATE_LIMIT` / `API_RATE_WINDOW_MS`                            | `120` / `60000`                    | API requests allowed per client key in the time window                                   |
+| `CORS_ORIGINS`                                                     | unset                              | Comma-separated exact browser origins; wildcard is rejected                              |
+| `BATCH_MAX_ITEMS`                                                  | `100`                              | Maximum sources in one batch                                                             |
+| `BATCH_CONCURRENCY_PER_API_KEY`                                    | `2`                                | Active queued jobs per client key                                                        |
+| `BATCH_RATE_LIMIT_PER_API_KEY`                                     | `10`                               | Jobs admitted per client within the rate window                                          |
+| `BATCH_RATE_WINDOW_MS`                                             | `60000`                            | Per-key job rate window                                                                  |
+| `BATCH_JOB_ATTEMPTS` / `BATCH_BACKOFF_DELAY_MS`                    | `3` / `1000`                       | Retry count and exponential backoff base                                                 |
+| `BATCH_RESULT_TTL_SECONDS`                                         | `86400`                            | Job and output retention period                                                          |
+| `WEBHOOK_SIGNING_SECRET`                                           | unset                              | HMAC key for optional completion webhooks                                                |
+| `REMOVE_BACKGROUND_ENABLED`                                        | `false`                            | Enable the optional rembg plugin                                                         |
+| `UPSCALE_ENABLED`                                                  | `false`                            | Enable the Real-ESRGAN worker plugin                                                     |
+| `AUTO_ALT_TEXT_ENABLED`                                            | `false`                            | Enable vision-based alt-text generation                                                  |
+| `NSFW_CHECK_ENABLED`                                               | `false`                            | Enable NSFW scoring and optional threshold blocking                                      |
+| `AI_PLUGIN_TIMEOUT_MS`                                             | `20000`                            | Per-plugin timeout; worker request and response bytes use upload limit                   |
+| `REALESRGAN_BACKEND_URL`                                           | unset                              | Private Real-ESRGAN HTTP inference endpoint                                              |
+| `VISION_MODEL_URL`                                                 | unset                              | Private vision endpoint implementing `POST /api/alt-text`                                |
+| `NSFW_MODEL_URL`                                                   | unset                              | Private image scoring endpoint implementing `POST /api/nsfw-check`                       |
+| `OTEL_ENABLED`                                                     | `false`                            | Enable OpenTelemetry tracing and Fastify request spans                                   |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`                                      | `http://localhost:4318`            | OTLP/HTTP collector base URL; traces are sent to `/v1/traces`                            |
+| `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD`                    | `admin` / local-only placeholder   | Local dashboard login for Compose monitoring profile                                     |
+| `PROMETHEUS_PORT` / `GRAFANA_PORT`                                 | `9090` / `3001`                    | Loopback ports for local monitoring services                                             |
+
+## Observability
+
+`GET /metrics` exports Prometheus text format. Route labels use Fastify route templates to avoid source URLs and high-cardinality labels. The service records request counts and latency, per-operation transform duration, cache hits/misses, BullMQ waiting/active/delayed depth, in-flight transforms, and HTTP errors by stable code. Request logs keep Fastify request IDs and redact the full URL plus API-key, authorization, and cookie headers; signed query parameters therefore never appear in request logs.
+
+Start the API, Prometheus, and Grafana locally (copy `.env.example` to `.env` first):
+
+```sh
+docker compose --profile monitoring up --build
+```
+
+Open [Grafana](http://localhost:3001) to see the provisioned **Image Craft Service** dashboard. Prometheus scrapes the API every five seconds; its UI is at [localhost:9090](http://localhost:9090). The Compose ports bind to loopback. Change `GRAFANA_ADMIN_PASSWORD` before exposing Grafana beyond the local machine, and keep `/metrics` behind trusted network access in deployed environments.
+
+Generate local request and transform samples for the dashboard:
+
+```sh
+node scripts/observability-load-test.mjs http://127.0.0.1:3000 40
+```
+
+For traces, set `OTEL_ENABLED=true` and point `OTEL_EXPORTER_OTLP_ENDPOINT` at an OTLP/HTTP collector. Fastify creates request spans; the service adds child spans for image fetch, transform, and cache operations. Request IDs are attached to spans for log correlation. Tracing remains off unless enabled.
+
+### Read-only admin dashboard
+
+Set `ADMIN_DASHBOARD_ENABLED=true` to serve a lightweight dashboard at `/admin`. Build its plain TypeScript bundle with `npm run build:dashboard` (the Docker build includes this step). The page uses local CSS/JavaScript only and refreshes cache size and hit ratio, top remote images, HTTP error rates, queue depth, and tenant daily usage every five seconds. Enter an API key with the `admin` scope to load data; the key stays in page memory and is sent only in the `X-API-Key` header. Dashboard counters and top-image tracking are process-local. Query strings and URL credentials are removed from displayed image sources.
 
 ## Security
 
-Remote URLs are restricted to HTTP(S), DNS-resolved addresses are checked and pinned for the connection, and every redirect is validated again. Loopback, private, link-local, reserved, and cloud metadata ranges are blocked. Set `ALLOWED_HOSTS` to further restrict remote fetches. Uploads are sniffed by file signature, decoded pixel and byte limits are enforced, and API errors do not return stack traces or file paths. Keep `SIGNING_SECRET` private and use TLS at the reverse proxy.
-
-## Development
+Remote fetches use HTTP(S), reject non-public IP ranges, pin checked DNS results, and validate every redirect target. Optional `ALLOWED_HOSTS` narrows remote sources further. Configure API keys as SHA-256 digests; raw keys are sent in the `X-API-Key` header and are not stored by the service. Records use `digest=scope+scope` and are separated by semicolons. Supported scopes are `transform`, `metadata`, `batch:read`, and `batch:write`; omit scopes to grant all four. Generate a digest with Node.js:
 
 ```sh
-npm ci
-npm run lint
-npm run typecheck
-npm test
-npm run build
+node -e 'console.log(require("node:crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' 'replace-with-a-long-random-key'
 ```
+
+Set `CORS_ORIGINS` to exact origins such as `https://app.example.com`; requests from other browser origins are rejected. `admin` is an additional API-key scope for read-only administration endpoints. Uploads are checked by file signature and bounded by byte and total decoded-pixel limits. SVG input is not accepted, and image watermark overlays require raster PNG. Keep the service behind TLS and trusted access controls; use `SIGNING_SECRET` when clients can request remote transforms. See [SECURITY.md](SECURITY.md) and the [v0.5.0 security audit](docs/security-audit.md).
+
+## Deployment recipes
+
+See [docs/deployment.md](docs/deployment.md) for Docker, Kubernetes/Helm, Fly.io, and Railway recipes. Use object storage for persistent cache and batch files on platforms where local filesystems are ephemeral.
+
+The [documentation site](https://erolsenol.github.io/image-craft-service/) covers getting started, API, configuration, deployment, plugins, FAQ, and security. [API stability](docs/api-stability.md) and the [v1 upgrade guide](docs/upgrade-v1.md) describe compatibility changes.
+
+For multi-replica deployments, use S3-compatible shared storage and a shared Redis lock tier; disk cache is local to one node. See the [horizontal scaling architecture](docs/horizontal-scaling.md) for the Mermaid diagram, Helm HPA values, and consistent-hash guidance. The [load-test report](docs/load-test-report.md) includes reproducible 1k, 5k, and 10k RPS runs; measured result fields remain blank until run against a real multi-node target.
 
 ## Roadmap
 
-- S3-compatible cache adapter
-- More compact URL operation syntax
-- Per-client authentication and rate limits
-- Metrics and tracing
-- Additional image formats and animation controls
+- More first-party plugins and model worker recipes
+- Richer identity providers and quota policies
+- More formats and animation controls
+- Reproducible published benchmarks
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+The service code is MIT licensed. Third-party packages keep their own licenses; see [Sharp/libvips notices and the dependency audit](docs/licensing.md) and [LICENSE](LICENSE).

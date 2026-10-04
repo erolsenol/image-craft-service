@@ -7,6 +7,10 @@ export class ConcurrencyLimiter {
       throw new Error("limit must be a positive safe integer");
   }
 
+  get activeCount(): number {
+    return this.active;
+  }
+
   async run<T>(operation: () => Promise<T>): Promise<T> {
     await this.acquire();
     try {

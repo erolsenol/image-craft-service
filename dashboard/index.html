@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Image Craft Admin</title>
+    <link rel="stylesheet" href="/admin/dashboard.css" />
+    <script type="module" src="/admin/dashboard.js"></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">IMAGE CRAFT SERVICE</p>
+          <h1>Admin dashboard</h1>
+        </div>
+        <p id="updated" aria-live="polite">Not connected</p>
+      </header>
+
+      <section class="auth panel" aria-labelledby="auth-title">
+        <h2 id="auth-title">Admin access</h2>
+        <p>
+          Enter an API key with the <code>admin</code> scope. It stays in this
+          page's memory.
+        </p>
+        <form id="auth-form">
+          <label for="api-key">Admin API key</label>
+          <div class="key-row">
+            <input
+              id="api-key"
+              name="api-key"
+              type="password"
+              autocomplete="off"
+              required
+            />
+            <button type="submit">Connect</button>
+            <button id="disconnect" type="button" class="secondary" hidden>
+              Disconnect
+            </button>
+          </div>
+        </form>
+        <p id="message" role="status" aria-live="polite"></p>
+      </section>
+
+      <section aria-labelledby="overview-title">
+        <h2 id="overview-title">Overview</h2>
+        <div id="overview" class="cards" aria-live="polite">
+          <p class="muted">Connect with an admin key to load service data.</p>
+        </div>
+      </section>
+
+      <div class="columns">
+        <section class="panel" aria-labelledby="images-title">
+          <h2 id="images-title">Top requested images</h2>
+          <div id="images"><p class="muted">No data yet.</p></div>
+        </section>
+        <section class="panel" aria-labelledby="errors-title">
+          <h2 id="errors-title">Error responses</h2>
+          <div id="errors"><p class="muted">No data yet.</p></div>
+        </section>
+      </div>
+
+      <div class="columns">
+        <section class="panel" aria-labelledby="queue-title">
+          <h2 id="queue-title">Queue</h2>
+          <div id="queue"><p class="muted">No data yet.</p></div>
+        </section>
+        <section class="panel" aria-labelledby="tenants-title">
+          <h2 id="tenants-title">Tenant usage today</h2>
+          <div id="tenants"><p class="muted">No data yet.</p></div>
+        </section>
+      </div>
+      <footer>
+        Refreshes every 5 seconds while connected. Counters are process-local.
+      </footer>
+    </main>
+  </body>
+</html>
