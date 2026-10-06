@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { utimes } from "node:fs/promises";
@@ -107,5 +107,26 @@ describe("DiskStorage", () => {
     expect(await readdir(directory)).toEqual([
       expect.stringMatching(/^[a-f0-9]{64}\.entry$/u),
     ]);
+  });
+});
+
+describe("corrupt cache metadata", () => {
+  it.each(["{broken", '{"expiresAt":1e999}', '{"expiresAt":"future"}'])(
+    "treats invalid stream metadata %s as a cache miss",
+    async (metadata) => {
+      const storage = new DiskStorage(directory, 1024);
+      const name = `${createHash("sha256").update("entry").digest("hex")}.entry`;
+      await writeFile(join(directory, name), `${metadata}\npayload`);
+      await expect(storage.getStream("entry")).resolves.toBeUndefined();
+      expect(await readdir(directory)).toEqual([]);
+    },
+  );
+  it("rejects overflow before altering an existing cache entry", async () => {
+    const storage = new DiskStorage(directory, 1024);
+    await storage.set("entry", Buffer.from("original"), 60);
+    await expect(
+      storage.set("entry", Buffer.from("replacement"), Number.MAX_VALUE),
+    ).rejects.toThrow();
+    expect(await storage.get("entry")).toEqual(Buffer.from("original"));
   });
 });

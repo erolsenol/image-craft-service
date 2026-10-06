@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import sharp from "sharp";
 import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -14,6 +15,12 @@ import type {
   BatchQueue,
   BatchRequest,
 } from "../../src/jobs/types.js";
+
+const packageVersion = (
+  JSON.parse(
+    readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+  ) as { version: string }
+).version;
 
 const testConfig: AppConfig = {
   NODE_ENV: "test",
@@ -285,7 +292,7 @@ describe("HTTP API", () => {
     expect(docs.json().paths).toHaveProperty("/v1/hash/{*}");
     expect(docs.json().paths).toHaveProperty("/v1/pdf/{*}");
     expect(docs.json().paths).toHaveProperty("/metrics");
-    expect(docs.json().info.version).toBe("1.2.0");
+    expect(docs.json().info.version).toBe(packageVersion);
     expect(docs.json().paths["/v1/img/{ops}/{*}"]?.get?.parameters).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "expires", in: "query" }),

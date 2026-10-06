@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -7,6 +8,12 @@ import {
   verifyTransformSignature,
 } from "../src/security/signing.js";
 import { createCraftClient } from "../packages/client/src/index.js";
+
+const packageVersion = (
+  JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  ) as { version: string }
+).version;
 
 describe("OpenAPI SDK contract", () => {
   const appPromise = createApp();
@@ -22,7 +29,7 @@ describe("OpenAPI SDK contract", () => {
       await readFile(resolve("openapi/openapi.json"), "utf8"),
     ) as unknown;
     const live = app.swagger();
-    expect(live.info.version).toBe("1.2.0");
+    expect(live.info.version).toBe(packageVersion);
     expect(live.paths).toHaveProperty("/v1/img/{ops}/{*}");
     expect(live.paths).toHaveProperty("/v1/transform");
     expect(checkedIn).toEqual(live);
@@ -38,7 +45,7 @@ describe("OpenAPI SDK contract", () => {
       resolve("packages/python/image_craft_client/_openapi.py"),
       "utf8",
     );
-    expect(pythonContract).toContain("OPENAPI_VERSION = '1.2.0'");
+    expect(pythonContract).toContain(`OPENAPI_VERSION = '${packageVersion}'`);
     expect(pythonContract).toContain(
       "REMOTE_IMAGE_ROUTE = '/v1/img/{ops}/{*}'",
     );

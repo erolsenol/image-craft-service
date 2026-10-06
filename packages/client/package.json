@@ -1,6 +1,6 @@
 {
   "name": "image-craft-client",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Typed JavaScript and TypeScript SDK for image-craft-service",
   "repository": {
     "type": "git",

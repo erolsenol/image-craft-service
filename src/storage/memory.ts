@@ -1,3 +1,4 @@
+import { expirationFromTtl } from "./expiration.js";
 import type { CacheMeta, Storage } from "./types.js";
 
 interface Entry {
@@ -37,9 +38,12 @@ export class MemoryStorage implements Storage {
     }
 
     const expiresAt =
-      ttlSeconds === undefined
-        ? meta.expiresAt
-        : Date.now() + ttlSeconds * 1000;
+      ttlSeconds === undefined ? meta.expiresAt : expirationFromTtl(ttlSeconds);
+    if (
+      expiresAt !== undefined &&
+      (!Number.isFinite(expiresAt) || expiresAt > Number.MAX_SAFE_INTEGER)
+    )
+      throw new Error("Invalid metadata expiration");
     if (expiresAt !== undefined && expiresAt <= Date.now()) {
       this.entries.delete(key);
       return;
