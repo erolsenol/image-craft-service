@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Image Craft Service",
-    "version": "1.2.0",
+    "version": "1.2.1",
     "description": "Self-hosted image processing HTTP API"
   },
   "components": {

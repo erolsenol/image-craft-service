@@ -1,3 +1,4 @@
+import { expirationFromTtl } from "./expiration.js";
 import {
   DeleteObjectCommand,
   GetObjectCommand,
@@ -60,15 +61,14 @@ export class S3Storage implements PresignedUploadStorage {
   }
 
   async set(key: string, value: Buffer, ttlSeconds: number): Promise<void> {
-    if (!Number.isFinite(ttlSeconds) || ttlSeconds < 0)
-      throw new Error("ttlSeconds must be a non-negative number");
+    const expiresAt = expirationFromTtl(ttlSeconds);
     if (ttlSeconds === 0) return this.delete(key);
     await this.client.send(
       new PutObjectCommand({
         Bucket: this.bucket,
         Key: key,
         Body: value,
-        Metadata: { expiresat: String(Date.now() + ttlSeconds * 1000) },
+        Metadata: { expiresat: String(expiresAt) },
       }),
     );
   }
@@ -131,7 +131,7 @@ export class S3Storage implements PresignedUploadStorage {
       Key: key,
       ContentType: contentType,
       ContentLength: contentLength,
-      Metadata: { expiresat: String(Date.now() + objectTtlSeconds * 1000) },
+      Metadata: { expiresat: String(expirationFromTtl(objectTtlSeconds)) },
     });
     const url = await getSignedUrl(this.client, command, {
       expiresIn: uploadExpiresInSeconds,
@@ -166,7 +166,10 @@ export function createS3Client(config: AppConfig): S3Client {
 }
 
 function isExpired(expiresAt: string | undefined): boolean {
-  return expiresAt !== undefined && Number(expiresAt) <= Date.now();
+  return (
+    expiresAt !== undefined &&
+    (!Number.isFinite(Number(expiresAt)) || Number(expiresAt) <= Date.now())
+  );
 }
 
 function isNotFound(error: unknown): boolean {

@@ -1,3 +1,4 @@
+import { expirationFromTtl } from "./expiration.js";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import {
@@ -74,14 +75,19 @@ export class DiskStorage implements Storage {
         await this.delete(key);
         return undefined;
       }
-      const metadata: unknown = JSON.parse(
-        prefix.subarray(0, separator).toString("utf8"),
-      );
+      let metadata: unknown;
+      try {
+        metadata = JSON.parse(prefix.subarray(0, separator).toString("utf8"));
+      } catch {
+        await this.delete(key);
+        return undefined;
+      }
       if (
         typeof metadata !== "object" ||
         metadata === null ||
         !("expiresAt" in metadata) ||
         typeof metadata.expiresAt !== "number" ||
+        !Number.isFinite(metadata.expiresAt) ||
         metadata.expiresAt <= Date.now()
       ) {
         await this.delete(key);
@@ -99,8 +105,7 @@ export class DiskStorage implements Storage {
   }
 
   async set(key: string, value: Buffer, ttlSeconds: number): Promise<void> {
-    if (!Number.isFinite(ttlSeconds) || ttlSeconds < 0)
-      throw new Error("ttlSeconds must be a non-negative number");
+    const expiresAt = expirationFromTtl(ttlSeconds);
     await this.withMutation(async () => {
       const targetPath = this.pathFor(key);
       if (ttlSeconds === 0) {
@@ -108,7 +113,6 @@ export class DiskStorage implements Storage {
         return;
       }
 
-      const expiresAt = Date.now() + ttlSeconds * 1000;
       const fileContents = encodeEntry(value, expiresAt);
       if (fileContents.byteLength > this.maxSizeBytes) {
         await removeIfPresent(targetPath);
@@ -245,7 +249,8 @@ function decodeEntry(
       typeof metadata !== "object" ||
       metadata === null ||
       !("expiresAt" in metadata) ||
-      typeof metadata.expiresAt !== "number"
+      typeof metadata.expiresAt !== "number" ||
+      !Number.isFinite(metadata.expiresAt)
     )
       return undefined;
     return {

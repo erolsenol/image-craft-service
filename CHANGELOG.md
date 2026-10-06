@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-06
+
+- Treat corrupt disk-cache metadata as a cache miss instead of a server failure.
+- Reject invalid and overflowing TTL values consistently across disk, memory and S3 storage before overwriting cache entries.
+- Synchronize SDK package versions with the service maintenance release; API contracts are unchanged.
+
 ## [1.2.0] - 2026-10-04
 
 ### Added
