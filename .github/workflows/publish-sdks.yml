@@ -27,6 +27,8 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: npm install --global npm@latest
       - run: npm ci
+      - name: Normalize repository metadata for existing release packages
+        run: npm pkg set repository.type=git repository.url=git+https://github.com/erolsenol/image-craft-service.git
       - name: Publish service package if this version is not already on npm
         run: |
           VERSION=$(node -p "require('./package.json').version")
