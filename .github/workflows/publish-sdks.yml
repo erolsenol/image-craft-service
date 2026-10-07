@@ -18,7 +18,7 @@ jobs:
     if: startsWith(github.event.release.tag_name || inputs.release_tag, 'v1.')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name || inputs.release_tag }}
       - uses: actions/setup-node@v4
@@ -46,7 +46,7 @@ jobs:
     if: startsWith(github.event.release.tag_name || inputs.release_tag, 'v1.')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name || inputs.release_tag }}
       - uses: actions/setup-node@v4
@@ -80,7 +80,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name || inputs.release_tag }}
       - uses: actions/setup-python@v5
