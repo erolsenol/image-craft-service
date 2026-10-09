@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim AS build
+FROM node:25-bookworm-slim AS build
 WORKDIR /app
 COPY package*.json .npmrc ./
 COPY packages/client/package.json ./packages/client/package.json
@@ -6,7 +6,7 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-FROM node:20-bookworm-slim AS runtime
+FROM node:25-bookworm-slim AS runtime
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 CACHE_DIR=/var/cache/image-craft
 WORKDIR /app
 COPY package*.json .npmrc ./
